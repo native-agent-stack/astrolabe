@@ -1,0 +1,8 @@
+# The model id each agent family runs on: the merge gate's reviewers (scripts/gate.py) and the
+# Claude workers the dispatch helper starts (scripts/dispatch.py) read it here, their one place.
+# Ported from meridian@014f706d:deploy/wsl/setup.sh, the values of CLAUDE_MODEL, CODEX_MODEL and
+# DSH_MODEL; changed: a TOML file of its own instead of shell assignments.
+[models]
+claude = "claude-opus-5-5"
+codex = "gpt-6-astra"
+deepseek = "deepseek-flash"

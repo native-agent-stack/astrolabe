@@ -1,0 +1,22 @@
+# Row names are exact UPSTREAM.md cells; paths use case-sensitive fnmatch (* includes /).
+# Each own-design area names its upstream feature and the gap it fills.
+# One entry per line: the map merges by union (.gitattributes).
+[areas]
+"astrolabe/__init__.py" = { upstream = "NautilusTrader", how = "integrate", feature = "Python package", why = "the lane needs its own namespace" }
+"astrolabe/ib_ids.py" = { upstream = "CPython", how = "build-on", feature = "module constants", why = "the Gateway target and the API client ids are named in one reviewed module and never configured" }
+"astrolabe/settings.py" = { upstream = "CPython", how = "build-on", feature = "dataclasses, pathlib and the XDG state directory", why = "the lane finds its checkout, the Gateway folder and its state outside the git tree" }
+"astrolabe/boundary.py" = { upstream = "NautilusTrader IB integration guide and reconciliation concept", how = "build-on", feature = "paper Gateway configuration, and the Gateway's listening sockets read from /proc", why = "the lane must verify paper state before it constructs the engine" }
+"astrolabe/ib_probe.py" = { upstream = "IBKR TWS API: managed accounts", how = "build-on", feature = "managed-accounts handshake", why = "the engine adapter trusts the configured account; the probe reads what the Gateway reports" }
+"astrolabe/market_hours.py" = { upstream = "exchange-calendars", how = "integrate", feature = "XNYS sessions, early closes and holidays", why = "a run is refused outside the session it is meant for" }
+"astrolabe/ibkr_paper.py" = { upstream = "NautilusTrader", how = "build-on", feature = "live node run and startup reconciliation", why = "owner confirmation and scrubbed run records are harness policy" }
+"astrolabe/ibkr_node.py" = { upstream = "NautilusTrader", how = "build-on", feature = "LiveNode.builder, the Interactive Brokers data and execution clients, Strategy and OrderFactory", why = "the attended lane needs bounded order and fill proofs on the engine's own API" }
+"tools/guard/pretooluse.py" = { upstream = "Claude Code hooks (`PreToolUse`)", how = "build-on", feature = "a PreToolUse command hook that blocks a call by exiting with code 2", why = "agents must not reach the API ports, the lane's entry points, the owner's files or secret paths" }
+".agents/skills/lead/scripts/dispatch.py" = { upstream = "Orca skills `orca-cli`, `orchestration`", how = "build-on", feature = "worker-start/worktree-show receipts and exact worker transcript, idle wait and terminal input", why = "compose the installed runtime rules, Codex detector and gate registration in one dispatch" }
+".agents/skills/lead/scripts/gate.py" = { upstream = "GitHub CLI (`gh`)", how = "build-on", feature = "pr create, edit, comment and checks; repository merge", why = "one branch lands at a time, only from a tested tree with a cross-family review record" }
+".agents/skills/lead/scripts/trigger_words.py" = { upstream = "oh-my-codex (Codex workflow layer)", how = "integrate", feature = "the installed detectKeywords detector", why = "dispatch text must not start an unintended Codex workflow" }
+".agents/skills/lead/scripts/learnings.py" = { upstream = "compound-engineering `ce-compound` practice (skill text read, not installed)", how = "build-on", feature = "one lesson per solved problem in its cheapest durable form", why = "the practice must reach all three runtimes as a command and a file, without the plugin" }
+
+# Only differently named rows need aliases; package labels are normalized automatically.
+[dependencies]
+nautilus-trader = "NautilusTrader"
+pyright = "pyright (with `nodejs-wheel-binaries` 24.19.0)"

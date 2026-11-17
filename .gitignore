@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+# Agents' own per-worktree state.
+.omx/
+.omc/
+.serena/
+# Run records live outside the tree, under ~/.local/state/astrolabe. A stray local folder
+# may hold account ids and raw engine logs; never committed.
+runs/
+local/
+# The owner's allowlist, and any copy of it (a backup, an editor's swap or tilde file). Its
+# SHA-256 values can be reversed to the account id, and this repository is public, so none of
+# them is ever committed. A contract meant for the repository would need `git add -f`.
+*.contract.json*
+# Environment files hold keys.
+.env
+.env.*

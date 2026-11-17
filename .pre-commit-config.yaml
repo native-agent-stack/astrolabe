@@ -1,0 +1,32 @@
+# Git hooks for prek (https://github.com/j178/prek; prek 0.5.10, `prek --help`, read
+# 2026-11-17), which reads pre-commit's configuration format. Install once per clone with
+# `uv run prek install`. Every hook is local: no hook repository is downloaded, and each tool is
+# the one the lock (uv.lock) or the machine (gitleaks 8.30.1, UPSTREAM.md) pins.
+# tests/test_precommit_config.py keeps every hook local.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format --check
+        entry: uv run ruff format --check
+        language: system
+        types_or: [python, pyi]
+      # `gitleaks git --pre-commit --staged` scans the staged diff (`gitleaks git --help`,
+      # 8.30.1). The repository's rules extend gitleaks' defaults (.gitleaks.toml).
+      - id: gitleaks
+        name: gitleaks (staged changes)
+        entry: gitleaks git --pre-commit --staged --redact --no-banner --config .gitleaks.toml
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: zizmor
+        name: zizmor --offline .github/
+        entry: uv run zizmor --offline .github/
+        language: system
+        files: ^\.github/
+        pass_filenames: false

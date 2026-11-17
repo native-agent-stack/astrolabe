@@ -1,0 +1,63 @@
+[project]
+name = "astrolabe"
+version = "0.1.0"
+description = "IBKR paper-trading lane on NautilusTrader. Paper only."
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "exchange-calendars==4.13.2",
+    "nautilus_trader==2.0.0rc9",
+]
+
+[dependency-groups]
+dev = [
+    "prek>=0.5.10",
+    "pyright[nodejs]>=1.1.414",
+    "pytest>=9.2.0",
+    "pytest-xdist>=3.8.0",
+    "ruff>=0.17.4",
+    "zizmor>=1.32.0",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+# uv itself is pinned where it is installed and in the CI workflow.
+# Release cooldown: nothing uploaded in the last 7 days is resolved...
+exclude-newer = "7 days"
+# ...except the engine, pinned exactly to a release candidate uploaded on 2026-11-10 (see
+# UPSTREAM.md). Its 7 days end at 2026-11-17T21:00Z; the first change after that removes this line.
+exclude-newer-package = { nautilus-trader = false }
+# Wheels only: nothing is built from a source distribution on this machine or in CI.
+no-build = true
+
+[tool.ruff]
+line-length = 100
+# upstream/: third-party files kept byte for byte at their pins.
+extend-exclude = ["upstream"]
+
+[tool.ruff.lint]
+select = ["E", "F", "UP", "B", "SIM", "I", "TID"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"nautilus_trader.adapters.interactive_brokers".msg = "The IB adapter is imported only in astrolabe/ibkr_node.py."
+"nautilus_trader.live".msg = "Live nodes are built only in astrolabe/ibkr_node.py."
+"nautilus_trader.trading".msg = "Strategies that place orders live only in astrolabe/ibkr_node.py."
+
+[tool.ruff.lint.per-file-ignores]
+"astrolabe/ibkr_node.py" = ["TID251"]
+"tests/*" = ["TID251"]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+include = ["astrolabe", "tests", "tools", ".agents/skills/lead/scripts"]
+extraPaths = ["tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+# pytest 9.2: retain only failed tests for one session; passing sessions are removed.
+# https://docs.pytest.org/en/stable/reference/reference.html#confval-tmp_path_retention_policy
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 1
+# pytest-xdist: a worker per logical CPU, at most 8, as several projects share the machine.
+addopts = ["-n", "logical", "--maxprocesses=8", "--dist", "worksteal"]

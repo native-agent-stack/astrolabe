@@ -1,0 +1,20 @@
+extend = {useDefault = true}
+[[rules]]
+id = "public-home-path"
+description = "Use a repository-relative path, ~/path, or an example home placeholder."
+regex = '''(?i)(?:^|[^\p{L}\p{N}_/\\])(?:/+|[a-z]:\\+)(home/|Users[/\\]+|mnt/[a-z]/Users/)[\p{L}\p{N}][^/\\\s"'<>|:]*'''
+# owner/example/runner: generic account, synthetic homes, CI runner; never a person's login.
+allowlists = [{regexTarget = "match", regexes = ['''(?i)^[^\p{L}\p{N}_/\\]?(?:/+|[a-zA-Z]:\\+)(?:home/|Users[/\\]+|mnt/[a-z]/Users/)(?:owner|example|runner)$''']}]
+[[rules]]
+id = "public-email"
+description = "Omit the address; use a reserved example domain only for synthetic examples."
+regex = '''[a-zA-Z0-9_][a-zA-Z0-9._%+!#$&'*?^`{|}~-]*(@)[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z][a-zA-Z0-9-]*'''
+allowlists = [{regexTarget = "match", regexes = [
+  # RFC 2606 example domains incl. subdomains; exact AGENT_TRAILERS addresses (parity tested).
+  '''(?i)^[^@]+@(?:[a-z0-9-]+\.)*(?:example\.(?:com|net|org)|example|invalid|test)$''',
+  '''^(?:noreply@(?:openai|anthropic)|bot@(?:openai|deepseek))\.com$''',
+  # SSH clone remotes use the literal user git; systemd units and their drop-in dirs are not mailboxes.
+  '''^git@[^@]+$''',
+  '''\.(?:service|timer|socket|target|mount|path)(?:\.d)?$''',
+]}]
+# History before the rules is not scanned; CI and the gate scan only the change range.

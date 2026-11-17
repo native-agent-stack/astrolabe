@@ -1,0 +1,57 @@
+# Size budget, checked by tests/test_size_budget.py.
+#
+# Raising a limit takes a pull request that says why. Each line limit and total is the measure
+# of the tree git would track (committed, staged and untracked but not ignored) plus 10 percent,
+# rounded up to the next 10; the two counts (workflows, skills) are rounded up to the next whole
+# number, CLAUDE.md stays at its one import line, and AGENTS.md at the 45 lines of
+# tests/test_agents_md.py. Measure with one command from the repository root; it prints each
+# number and the limit it would get:
+#   PYTHONPATH=. uv run --no-sync python tests/test_size_budget.py
+#
+# A tripwire, not a lock: an agent can edit this file too.
+
+[lines]
+"AGENTS.md" = 45 # loads into every context
+"CLAUDE.md" = 1 # only the @AGENTS.md import
+"docs/RUNBOOK.md" = 140 # the owner's runs
+
+[totals]
+agent_instruction_lines = 50 # every AGENTS.md and CLAUDE.md, at any depth
+prose_lines = 820
+config_lines = 330
+workflows = 2
+skills = 5
+
+[kinds]
+# Every file git would track is one of these kinds: the first that matches its path or its
+# file name (case-insensitive fnmatch, where * also matches "/"), in this order. A file that
+# matches none fails the test, so a new kind of file is counted or set aside on purpose.
+# upstream/ holds third-party files byte for byte and counts toward no total, Markdown included.
+# upstream-map.toml is the upstream gate's register, whose growth the gate itself checks.
+# docs/learnings.jsonl is the lessons register: it grows by one line for each lesson and each
+# promotion, which is its purpose; `learnings.py stale` names what to retire.
+not_counted = [
+  "upstream/*",
+  "uv.lock",
+  "*.py",
+  "*.sh",
+  "upstream-map.toml",
+  "docs/learnings.jsonl",
+]
+prose = ["*.md", "*.markdown"]
+config = [
+  "*.toml",
+  "*.yml",
+  "*.yaml",
+  "*.json",
+  "*.jsonc",
+  "*.jsonl",
+  "*.ini",
+  "*.cfg",
+  "*.service",
+  "*.timer",
+  ".gitignore",
+  ".gitattributes",
+  ".worktreeinclude",
+  ".python-version",
+]
