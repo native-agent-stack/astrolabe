@@ -416,3 +416,26 @@ def test_adr0012_stage3b_h096_dry_powder_15s_collar_and_informed_flow() -> None:
     assert ready["approved"] is True
     assert ready["limit_px"] == 100.09
     assert ready["standalone_alpha_claim"] is False
+
+
+def test_adr0013_stage3b_wave2_reentry_and_rvol_tod_gate() -> None:
+    bias = research_convergence.evaluate_stage3b_wave2_reentry_and_rvol_tod_gate(
+        stage1_rvol_tod=1.01,
+        ofi_entry=0.35,
+        stop_pct=1.70,
+        collar_spread_bps=6.5,
+    )
+    assert bias["megacap_normal_rate_size_bias_purged"] is True
+    assert bias["approved_wave1_early_ignition"] is False
+
+    w2 = research_convergence.evaluate_stage3b_wave2_reentry_and_rvol_tod_gate(
+        stage1_rvol_tod=2.35,
+        ofi_entry=0.32,
+        stop_pct=1.65,
+        collar_spread_bps=7.0,
+        core_harvest_completed=True,
+        pullback_held_zero_loss_floor=True,
+    )
+    assert w2["approved_wave1_early_ignition"] is True
+    assert w2["approved_wave2_reentry"] is True
+    assert w2["standalone_alpha_claim"] is False
