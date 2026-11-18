@@ -431,3 +431,83 @@ def validate_stage3b_orca_trading_lane(
         "protective_reserve_mpm": IBKR_PROTECTIVE_EXIT_RESERVE_MPM,
         "max_stop_pct": stop_v,
     }
+
+
+RTH_PROTECTIVE_MAX_SPREAD_BPS: float = 10.0
+MIN_PROTECTIVE_ADV_20D_USD: float = 20_000_000.0
+MIN_PROTECTIVE_OFI: float = 0.25
+STREAK_COOLDOWN_LOSSES: int = 5
+STREAK_COOLDOWN_SEC: float = 1800.0
+PROBATION_SIZE_MULTIPLIER: float = 0.25
+
+
+def evaluate_stage3b_protective_entry_shield(
+    *,
+    ts_utc: datetime,
+    nbbo_spread_bps: float,
+    stop_pct: float,
+    adv_20d_usd: float,
+    ofi: float,
+    consecutive_losses: int = 0,
+    elapsed_since_loss_sec: float = 3600.0,
+    rolling_trades: int = 0,
+    half_kelly_cap_pct: float = 1.0,
+    profit_factor: float = 1.2,
+    is_taker_chase: bool = False,
+    is_first_hand_8k: bool = False,
+) -> dict[str, Any]:
+    """Enforce `ADR-0009` Stage-3B `PROTECTIVE_FILTER_OR_GOVERNANCE` discipline gate."""
+    if ts_utc.tzinfo is None or ts_utc.utcoffset() is None:
+        raise ValueError("ts_utc must carry an explicit time zone")
+    spread_v = _require_finite_float(nbbo_spread_bps, "nbbo_spread_bps")
+    stop_v = _require_finite_float(stop_pct, "stop_pct")
+    adv_v = _require_finite_float(adv_20d_usd, "adv_20d_usd")
+    ofi_v = _require_finite_float(ofi, "ofi")
+    elapsed_v = _require_finite_float(elapsed_since_loss_sec, "elapsed_since_loss_sec")
+    hk_v = _require_finite_float(half_kelly_cap_pct, "half_kelly_cap_pct")
+    pf_v = _require_finite_float(profit_factor, "profit_factor")
+
+    def _deny(reason: str) -> dict[str, Any]:
+        return {
+            "approved": False,
+            "reason": reason,
+            "size_multiplier": 0.0,
+            "paper_port": ib_ids.PAPER_PORT,
+            "promotion_track": "PROTECTIVE_FILTER_OR_GOVERNANCE",
+            "standalone_alpha_claim": False,
+        }
+
+    if not (0.0 < stop_v <= ADR0022_MAX_STOP_PCT):
+        return _deny("adr0022_stop_cap_violation")
+    if spread_v <= 0.0:
+        return _deny("invalid_nonpositive_spread")
+    if adv_v < MIN_PROTECTIVE_ADV_20D_USD:
+        return _deny("illiquid_adv_below_20m")
+    if consecutive_losses >= STREAK_COOLDOWN_LOSSES and elapsed_v < STREAK_COOLDOWN_SEC:
+        return _deny("consecutive_loss_cooldown_active")
+
+    ny_tod = ts_utc.astimezone(_NY_TZ).timetz().replace(tzinfo=None)
+    is_rth = time(9, 30) <= ny_tod < time(16, 0)
+    if (
+        time(9, 30) <= ny_tod < time(9, 35)
+        and is_taker_chase
+        and not (is_first_hand_8k and spread_v <= 8.0)
+    ):
+        return _deny("rth_opening_5m_taker_whipsaw_blackout")
+
+    max_spr = RTH_PROTECTIVE_MAX_SPREAD_BPS if is_rth else OUTSIDE_RTH_MAX_SPREAD_BPS
+    if spread_v > max_spr:
+        return _deny("spread_exceeds_protective_cap")
+    if ofi_v < MIN_PROTECTIVE_OFI:
+        return _deny("insufficient_positive_ofi")
+
+    probation = rolling_trades >= 30 and hk_v <= 0.0 and pf_v < 0.75
+    mult = PROBATION_SIZE_MULTIPLIER if probation else 1.0
+    return {
+        "approved": True,
+        "reason": "approved_probation_025x" if probation else "approved_full_protective",
+        "size_multiplier": mult,
+        "paper_port": ib_ids.PAPER_PORT,
+        "promotion_track": "PROTECTIVE_FILTER_OR_GOVERNANCE",
+        "standalone_alpha_claim": False,
+    }

@@ -273,3 +273,46 @@ def test_adr0007_lit_queue_print_filter_and_stage3b_orca_lane() -> None:
             max_stop_pct=1.50,
             planned_entry_msg_per_min=2800,
         )
+
+
+def test_adr0009_stage3b_protective_entry_shield() -> None:
+    open_ts = datetime(2026, 11, 18, 14, 32, tzinfo=UTC)
+    v_open = research_convergence.evaluate_stage3b_protective_entry_shield(
+        ts_utc=open_ts,
+        nbbo_spread_bps=6.5,
+        stop_pct=1.75,
+        adv_20d_usd=50_000_000.0,
+        ofi=0.35,
+        is_taker_chase=True,
+    )
+    assert v_open["approved"] is False
+    assert v_open["reason"] == "rth_opening_5m_taker_whipsaw_blackout"
+    assert v_open["standalone_alpha_claim"] is False
+
+    rth_ts = datetime(2026, 11, 18, 15, 5, tzinfo=UTC)
+    v_h091 = research_convergence.evaluate_stage3b_protective_entry_shield(
+        ts_utc=rth_ts,
+        nbbo_spread_bps=11.5,
+        stop_pct=1.75,
+        adv_20d_usd=50_000_000.0,
+        ofi=0.35,
+    )
+    assert v_h091["approved"] is False
+    assert v_h091["reason"] == "spread_exceeds_protective_cap"
+
+    v_prob = research_convergence.evaluate_stage3b_protective_entry_shield(
+        ts_utc=rth_ts,
+        nbbo_spread_bps=6.0,
+        stop_pct=1.60,
+        adv_20d_usd=60_000_000.0,
+        ofi=0.32,
+        consecutive_losses=6,
+        elapsed_since_loss_sec=2400.0,
+        rolling_trades=157,
+        half_kelly_cap_pct=0.0,
+        profit_factor=0.29,
+    )
+    assert v_prob["approved"] is True
+    assert v_prob["size_multiplier"] == 0.25
+    assert v_prob["promotion_track"] == "PROTECTIVE_FILTER_OR_GOVERNANCE"
+    assert v_prob["standalone_alpha_claim"] is False
