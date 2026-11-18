@@ -8,4 +8,4 @@
 Maintaining duplicate execution adapters across repositories causes drift against pinned upstream sources and wastes private CI quota.
 
 ## Decision Outcome
-Designate `astrolabe` as the single Stage-3B public open-core IBKR paper engine in `github.com/native-agent-stack`, gated by `upstream-map.toml`, `40`-char SHA-pinned GitHub Actions, and zero-leak tree scans.
+Designate `astrolabe` as the single Stage-3B public open-core IBKR paper engine in the public open-core tier, gated by `upstream-map.toml`, `40`-char SHA-pinned GitHub Actions, and zero-leak tree scans.

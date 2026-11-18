@@ -2,6 +2,7 @@
 # Each own-design area names its upstream feature and the gap it fills.
 # One entry per line: the map merges by union (.gitattributes).
 [areas]
+"tools/architecture_catalog.py" = { upstream = "CPython", how = "build-on", feature = "pathlib and re", why = "verify the ADR catalog and pinned workflow actions" }
 "astrolabe/__init__.py" = { upstream = "NautilusTrader", how = "integrate", feature = "Python package", why = "the lane needs its own namespace" }
 "astrolabe/ib_ids.py" = { upstream = "CPython", how = "build-on", feature = "module constants", why = "the Gateway target and the API client ids are named in one reviewed module and never configured" }
 "astrolabe/settings.py" = { upstream = "CPython", how = "build-on", feature = "dataclasses, pathlib and the XDG state directory", why = "the lane finds its checkout, the Gateway folder and its state outside the git tree" }
