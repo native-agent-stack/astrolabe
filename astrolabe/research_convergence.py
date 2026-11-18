@@ -544,3 +544,84 @@ def probe_stage3b_ibkr_paper_readiness(
         "staged_basket_rows": staged_rows,
         "status": "READY_PAPER_4002" if is_open else "GATEWAY_OFFLINE_STAGED_ONLY",
     }
+
+
+def evaluate_stage3b_two_stage_collar_escalation(
+    *,
+    bid_px: float,
+    ask_px: float,
+    resting_elapsed_sec: float,
+    passive_filled: bool,
+    as_of_utc: datetime,
+    enable_dec6_23x5_sip: bool = False,
+    passive_window_sec: float = 15.0,
+    max_collar_spread_bps: float = RTH_PROTECTIVE_MAX_SPREAD_BPS,
+) -> dict[str, Any]:
+    """Evaluate 2-stage `15s` lit-bid -> `<= 10 bps` collar & Dec-6 pause (`ADR-0011`)."""
+    bid_v = _require_finite_float(bid_px, "bid_px")
+    ask_v = _require_finite_float(ask_px, "ask_px")
+    elap_v = _require_finite_float(resting_elapsed_sec, "resting_elapsed_sec")
+    win_v = _require_finite_float(passive_window_sec, "passive_window_sec")
+    cap_v = _require_finite_float(max_collar_spread_bps, "max_collar_spread_bps")
+    if bid_v <= 0.0 or ask_v < bid_v or elap_v < 0.0 or win_v <= 0.0:
+        raise ValueError("Invalid bid/ask/elapsed/window inputs for 2-stage collar escalation")
+    if not (0.0 < cap_v <= RTH_PROTECTIVE_MAX_SPREAD_BPS):
+        raise ValueError(f"max_collar_spread_bps must lie in (0, {RTH_PROTECTIVE_MAX_SPREAD_BPS}]")
+    if as_of_utc.tzinfo is None or as_of_utc.utcoffset() is None:
+        raise ValueError("as_of_utc must be timezone-aware")
+    if ib_ids.HOST != "127.0.0.1" or str(ib_ids.PAPER_PORT) != "4002":
+        raise PermissionError(
+            "Stage-3B 2-stage collar escalation requires loopback PAPER_PORT 4002"
+        )
+
+    ny_dt = as_of_utc.astimezone(_NY_TZ)
+    in_dec6_pause = bool(
+        enable_dec6_23x5_sip
+        and ny_dt.date() >= DEC6_23X5_CUTOVER_DATE
+        and ny_dt.weekday() != 5
+        and ny_dt.hour == 20
+    )
+    mid_px = 0.5 * (bid_v + ask_v)
+    spread_bps = ((ask_v - bid_v) / mid_px) * 10_000.0
+    base = {
+        "paper_port": ib_ids.PAPER_PORT,
+        "spread_bps": round(spread_bps, 4),
+        "in_dec6_2000_2100_et_pause": in_dec6_pause,
+        "promotion_track": "PROTECTIVE_FILTER_OR_GOVERNANCE",
+        "standalone_alpha_claim": False,
+    }
+    if in_dec6_pause:
+        return {
+            **base,
+            "stage": "BLOCKED_SIP_23X5_DAILY_PAUSE",
+            "escalate_to_collar": False,
+            "limit_px": None,
+        }
+    if passive_filled:
+        return {
+            **base,
+            "stage": "STAGE1_PASSIVE_BID_FILLED",
+            "escalate_to_collar": False,
+            "limit_px": round(bid_v, 4),
+        }
+    if elap_v < win_v:
+        return {
+            **base,
+            "stage": "STAGE1_RESTING_LIT_BID",
+            "escalate_to_collar": False,
+            "limit_px": round(bid_v, 4),
+        }
+    if 0.0 < spread_bps <= cap_v:
+        collar_px = min(ask_v, bid_v * (1.0 + cap_v / 10_000.0))
+        return {
+            **base,
+            "stage": "STAGE2_MARKETABLE_COLLAR_LIMIT",
+            "escalate_to_collar": True,
+            "limit_px": round(collar_px, 4),
+        }
+    return {
+        **base,
+        "stage": "EXPIRED_SPREAD_EXCEEDS_COLLAR_CAP",
+        "escalate_to_collar": False,
+        "limit_px": None,
+    }
