@@ -360,3 +360,74 @@ def resolve_equities_datafeed_regime(
         "cutover_regime": cutover_regime,
         "paper_port": ib_ids.PAPER_PORT,
     }
+
+
+IBKR_PAPER_MAX_MSG_PER_MIN: int = 3000
+IBKR_PROTECTIVE_EXIT_RESERVE_MPM: int = 300
+
+
+def is_lit_round_lot_queue_print(
+    exchange_code: str,
+    conditions: tuple[str, ...] | list[str] | None,
+    share_size: int | float,
+) -> bool:
+    """Return True iff print is a lit exchange non-odd-lot print eligible to deplete L1 queue.
+
+    FINRA TRF/ADF off-exchange prints (`exchange_code == 'D'`) and odd-lots (`'I'` condition
+    or `share_size < 100`) never execute against lit exchange L1 order books (`ADR-0007`).
+    """
+    sz = _require_finite_float(share_size, "share_size")
+    if sz <= 0.0:
+        raise ValueError("share_size must be positive")
+    if not isinstance(exchange_code, str) or not exchange_code.strip():
+        raise ValueError("exchange_code must be a non-empty venue code")
+    if exchange_code.strip().upper() == "D":
+        return False
+    if conditions and "I" in conditions:
+        return False
+    return sz >= 100.0
+
+
+def validate_stage3b_orca_trading_lane(
+    *,
+    port: int,
+    candidate_host: str,
+    active_broker_host: str | None,
+    max_stop_pct: float,
+    planned_entry_msg_per_min: int,
+) -> dict[str, Any]:
+    """Enforce `T3B_IBKR_4002_NAUTILUS_PAPER` Orca lane, rate reserve, and `ADR-0022`."""
+    if not isinstance(port, int) or isinstance(port, bool) or port != ib_ids.PAPER_PORT:
+        raise PermissionError(
+            f"Stage-3B trading lane strictly requires ib_ids.PAPER_PORT ({ib_ids.PAPER_PORT})"
+        )
+    if not isinstance(candidate_host, str) or not candidate_host.strip():
+        raise ValueError("candidate_host must be non-empty")
+    if active_broker_host is not None and active_broker_host != candidate_host:
+        raise PermissionError(
+            f"Dual-machine Stage-3B split-brain hard-refused: {active_broker_host!r} "
+            "already holds the paper lease"
+        )
+    stop_v = _require_finite_float(max_stop_pct, "max_stop_pct")
+    if not (0.0 < stop_v <= ADR0022_MAX_STOP_PCT):
+        raise ValueError(
+            f"ADR-0022 violation: max_stop_pct={stop_v} outside (0, {ADR0022_MAX_STOP_PCT}]"
+        )
+    if isinstance(planned_entry_msg_per_min, bool) or not isinstance(
+        planned_entry_msg_per_min, int
+    ):
+        raise ValueError("planned_entry_msg_per_min must be an integer")
+    max_entry_budget = IBKR_PAPER_MAX_MSG_PER_MIN - IBKR_PROTECTIVE_EXIT_RESERVE_MPM
+    if not (0 <= planned_entry_msg_per_min <= max_entry_budget):
+        raise ValueError(
+            f"planned_entry_msg_per_min={planned_entry_msg_per_min} exceeds {max_entry_budget} "
+            f"(reserving {IBKR_PROTECTIVE_EXIT_RESERVE_MPM}/{IBKR_PAPER_MAX_MSG_PER_MIN} msg/min)"
+        )
+    return {
+        "lane_id": "T3B_IBKR_4002_NAUTILUS_PAPER",
+        "paper_port": ib_ids.PAPER_PORT,
+        "approved_host": candidate_host,
+        "entry_budget_mpm": max_entry_budget,
+        "protective_reserve_mpm": IBKR_PROTECTIVE_EXIT_RESERVE_MPM,
+        "max_stop_pct": stop_v,
+    }
