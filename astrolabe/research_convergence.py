@@ -1,0 +1,362 @@
+"""Research-convergence provenance, Reg NMS Rule 612 paper stop-limit ticks, and feed regimes.
+
+Own design on Python's standard library (`decimal`, `datetime`, `zoneinfo`, `math`, `re`) and
+`astrolabe.ib_ids`, enforcing `ADR-0004`:
+1. 3-tier provenance verification (`64`-hex `input_sha256`, `40`-hex pinned commits for
+   `nautilus_trader` and `ib_async`, `E0..E4` evidence grade, and philosophy-only sibling rule).
+2. Reg NMS Rule 612 tick-quantized IBKR paper stop-limit geometry inside `ADR-0022 <= 2.00%`,
+   bound to `ib_ids.PAPER_PORT`, rejecting `outside_rth` entries when `nbbo_spread_bps > 28.0`.
+3. `XNYS` regular, `04:00-20:00 ET` `SIP`, and `20:00-04:00 ET` `BOATS` / `IBKR_OUTSIDE_RTH`
+   regime resolution with the `2026-12-06` `23/5` `SIP` cutover flag.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from datetime import UTC, date, datetime, time, timedelta
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from astrolabe import ib_ids
+
+ADR0022_MAX_STOP_PCT: float = 2.00
+OUTSIDE_RTH_MAX_SPREAD_BPS: float = 28.0
+DEC6_23X5_CUTOVER_DATE = date(2026, 12, 6)
+PINNED_NAUTILUS_TRADER_COMMIT = "da6b57aefdd62b44f675e434ffcfefca7f4025dd"
+PINNED_IB_ASYNC_COMMIT = "ab629f34c1823ea4c1542f32f07377208a86bdfd"
+
+VALID_EVIDENCE_GRADES: frozenset[str] = frozenset({"E0", "E1", "E2", "E3", "E4"})
+REQUIRED_UPSTREAM_KEYS: tuple[str, ...] = ("nautilus_trader", "ib_async")
+PHILOSOPHY_ONLY_REPOS: frozenset[str] = frozenset(
+    {
+        "canon",
+        "edge",
+        "meridian",
+        "movers",
+        "sota-dynamic-trail-c",
+        "sota-mover-ranker",
+        "trading-sota",
+        "tsl",
+    }
+)
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SHA1_40_RE = re.compile(r"^[0-9a-f]{40}$")
+_NY_TZ = ZoneInfo("America/New_York")
+
+
+def _require_finite_float(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a real number, got {value!r}")
+    fval = float(value)
+    if not math.isfinite(fval):
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    return fval
+
+
+def validate_research_convergence_provenance(
+    input_sha256: str,
+    upstream_commits: dict[str, str],
+    evidence_grade: str,
+    *,
+    other_repos_authority: str = "PHILOSOPHY_ONLY",
+) -> None:
+    """Enforce 64-hex input SHA-256, 40-hex upstream commits, E0-E4 grade, and ADR-0004 rule."""
+    if not isinstance(input_sha256, str) or not _SHA256_RE.fullmatch(input_sha256):
+        raise ValueError("input_sha256 must be a 64-character lowercase hex SHA-256 digest")
+
+    if not isinstance(upstream_commits, dict) or not upstream_commits:
+        raise ValueError("upstream_commits must be a non-empty dictionary of {repo: 40-hex sha}")
+
+    for raw_key, commit_sha in upstream_commits.items():
+        if not isinstance(raw_key, str) or not raw_key.strip():
+            raise ValueError("upstream_commits keys must be non-empty repository names")
+        norm_key = raw_key.strip().lower()
+        if norm_key in PHILOSOPHY_ONLY_REPOS:
+            raise ValueError(
+                f"ADR-0004 violation: sibling repository {raw_key!r} is PHILOSOPHY_ONLY "
+                "and cannot be cited as an upstream shelf commit"
+            )
+        if not isinstance(commit_sha, str) or not _SHA1_40_RE.fullmatch(commit_sha):
+            raise ValueError(
+                f"upstream_commits[{raw_key!r}] must be a 40-character lowercase hex commit SHA"
+            )
+
+    missing = [req for req in REQUIRED_UPSTREAM_KEYS if req not in upstream_commits]
+    if missing:
+        raise ValueError(f"upstream_commits missing required pinned keys: {missing}")
+
+    if not isinstance(evidence_grade, str) or evidence_grade not in VALID_EVIDENCE_GRADES:
+        raise ValueError(f"evidence_grade must be one of E0..E4, got {evidence_grade!r}")
+
+    if other_repos_authority != "PHILOSOPHY_ONLY":
+        raise ValueError(
+            f"ADR-0004 violation: other_repos_authority must be 'PHILOSOPHY_ONLY', "
+            f"got {other_repos_authority!r}"
+        )
+
+
+def _nms_tick(price: Decimal) -> Decimal:
+    return Decimal("0.01") if price >= Decimal("1.00") else Decimal("0.0001")
+
+
+def quantize_ibkr_paper_stop_limit(
+    *,
+    entry_px: float,
+    stop_pct: float,
+    nbbo_spread_bps: float,
+    side: str = "BUY",
+    outside_rth: bool = False,
+) -> dict[str, Any]:
+    """Quantize an IBKR paper stop-limit order to Rule 612 ticks inside ADR-0022 <= 2.00%."""
+    if ib_ids.HOST != "127.0.0.1" or str(ib_ids.PAPER_PORT) != "4002":
+        raise ValueError("IBKR paper firewall requires loopback host 127.0.0.1 and PAPER_PORT")
+    if not isinstance(outside_rth, bool):
+        raise ValueError("outside_rth must be an explicit bool")
+
+    e_val = _require_finite_float(entry_px, "entry_px")
+    s_pct = _require_finite_float(stop_pct, "stop_pct")
+    spread_bps = _require_finite_float(nbbo_spread_bps, "nbbo_spread_bps")
+
+    if e_val < 0.05:
+        raise ValueError(f"entry_px must be >= $0.05, got {entry_px!r}")
+    if s_pct <= 0.0 or s_pct > ADR0022_MAX_STOP_PCT:
+        raise ValueError(
+            f"ADR-0022 violation: stop_pct={s_pct} lies outside (0.0, {ADR0022_MAX_STOP_PCT}]%"
+        )
+    if spread_bps < 0.0:
+        raise ValueError(f"nbbo_spread_bps must be >= 0.0, got {nbbo_spread_bps!r}")
+    if outside_rth and spread_bps > OUTSIDE_RTH_MAX_SPREAD_BPS:
+        raise ValueError(
+            f"outside_rth rejected: nbbo_spread_bps={spread_bps} exceeds "
+            f"{OUTSIDE_RTH_MAX_SPREAD_BPS} bps cap"
+        )
+
+    if not isinstance(side, str):
+        raise ValueError(f"side must be 'BUY' or 'SELL', got {side!r}")
+    norm_side = side.strip().upper()
+    if norm_side in ("BUY", "LONG"):
+        norm_side = "BUY"
+        stop_order_side = "SELL"
+    elif norm_side in ("SELL", "SHORT"):
+        norm_side = "SELL"
+        stop_order_side = "BUY"
+    else:
+        raise ValueError(f"Unsupported side {side!r}; expected 'BUY' or 'SELL'")
+
+    d_entry = Decimal(str(e_val))
+    entry_tick = _nms_tick(d_entry)
+    entry_round = ROUND_FLOOR if norm_side == "BUY" else ROUND_CEILING
+    q_entry = (d_entry / entry_tick).to_integral_value(rounding=entry_round) * entry_tick
+
+    stop_ratio = Decimal(str(s_pct)) / Decimal("100")
+    if norm_side == "BUY":
+        raw_stop = q_entry * (Decimal("1") - stop_ratio)
+        stop_tick = _nms_tick(raw_stop)
+        q_stop = (raw_stop / stop_tick).to_integral_value(rounding=ROUND_CEILING) * stop_tick
+        if q_stop >= q_entry:
+            step = Decimal("0.01") if q_entry > Decimal("1.00") else Decimal("0.0001")
+            q_stop = q_entry - step
+    else:
+        raw_stop = q_entry * (Decimal("1") + stop_ratio)
+        stop_tick = _nms_tick(raw_stop)
+        q_stop = (raw_stop / stop_tick).to_integral_value(rounding=ROUND_FLOOR) * stop_tick
+        if q_stop <= q_entry:
+            step = Decimal("0.01") if q_entry >= Decimal("1.00") else Decimal("0.0001")
+            q_stop = q_entry + step
+
+    realized_stop_pct = float(abs(q_entry - q_stop) / q_entry) * 100.0
+    if realized_stop_pct <= 0.0 or realized_stop_pct > ADR0022_MAX_STOP_PCT + 1e-9:
+        raise ValueError(
+            f"NMS tick quantization exceeded ADR-0022 <= 2.00% at entry={q_entry} "
+            f"({realized_stop_pct:.4f}%)"
+        )
+
+    # Conservative marketable stop-limit collar bounded by spread and outside-RTH liquidity.
+    d_spread = Decimal(str(spread_bps))
+    collar_bps = (
+        min(Decimal("30.0"), max(Decimal("8.0"), d_spread * Decimal("1.25")))
+        if outside_rth
+        else min(Decimal("20.0"), max(Decimal("5.0"), d_spread))
+    )
+    collar_ratio = collar_bps / Decimal("10000")
+    if norm_side == "BUY":
+        raw_limit = q_stop * (Decimal("1") - collar_ratio)
+        limit_tick = _nms_tick(raw_limit)
+        q_limit = (raw_limit / limit_tick).to_integral_value(rounding=ROUND_CEILING) * limit_tick
+        if q_limit > q_stop:
+            q_limit = q_stop
+        if q_limit <= Decimal("0"):
+            q_limit = Decimal("0.0001")
+    else:
+        raw_limit = q_stop * (Decimal("1") + collar_ratio)
+        limit_tick = _nms_tick(raw_limit)
+        q_limit = (raw_limit / limit_tick).to_integral_value(rounding=ROUND_FLOOR) * limit_tick
+        if q_limit < q_stop:
+            q_limit = q_stop
+
+    return {
+        "gateway_host": ib_ids.HOST,
+        "paper_port": ib_ids.PAPER_PORT,
+        "side": norm_side,
+        "stop_order_side": stop_order_side,
+        "order_type": "STP_LMT",
+        "outside_rth": outside_rth,
+        "entry_px": q_entry,
+        "stop_px": q_stop,
+        "limit_px": q_limit,
+        "limit_offset_px": abs(q_stop - q_limit),
+        "collar_bps": float(collar_bps),
+        "realized_stop_pct": round(realized_stop_pct, 6),
+        "nbbo_spread_bps": round(spread_bps, 4),
+        "tick_size": _nms_tick(q_stop),
+    }
+
+
+def _easter_sunday(year: int) -> date:
+    """Anonymous Gregorian algorithm for Western Easter Sunday."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    ell = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * ell) // 451
+    month, day = divmod(h + ell - 7 * m + 114, 31)
+    return date(year, month, day + 1)
+
+
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + 7 * (n - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    nxt = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    last = nxt - timedelta(days=1)
+    offset = (last.weekday() - weekday) % 7
+    return last - timedelta(days=offset)
+
+
+def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
+    d = date(year, month, day)
+    if d.weekday() == 5:
+        return d - timedelta(days=1)
+    if d.weekday() == 6:
+        return d + timedelta(days=1)
+    return d
+
+
+def _xnys_holidays(year: int) -> frozenset[date]:
+    holidays = {
+        _nth_weekday(year, 1, 0, 3),  # MLK Jr. Day
+        _nth_weekday(year, 2, 0, 3),  # Washington's Birthday
+        _easter_sunday(year) - timedelta(days=2),  # Good Friday
+        _last_weekday(year, 5, 0),  # Memorial Day
+        _observed_fixed_holiday(year, 7, 4),  # Independence Day
+        _nth_weekday(year, 9, 0, 1),  # Labor Day
+        _nth_weekday(year, 11, 3, 4),  # Thanksgiving Day
+        _observed_fixed_holiday(year, 12, 25),  # Christmas Day
+    }
+    if year >= 2022:
+        holidays.add(_observed_fixed_holiday(year, 6, 19))  # Juneteenth
+    nyd = _observed_fixed_holiday(year, 1, 1)
+    if nyd.year == year:
+        holidays.add(nyd)
+    next_nyd = _observed_fixed_holiday(year + 1, 1, 1)
+    if next_nyd.year == year:
+        holidays.add(next_nyd)
+    return frozenset(holidays)
+
+
+def _is_xnys_session(d: date) -> bool:
+    return d.weekday() < 5 and d not in _xnys_holidays(d.year)
+
+
+def _xnys_rth_close_et(d: date) -> time:
+    """Return 13:00 ET on standard XNYS early-close sessions, else 16:00 ET."""
+    thanksgiving = _nth_weekday(d.year, 11, 3, 4)
+    if d == thanksgiving + timedelta(days=1):
+        return time(13, 0)
+    if d.month == 12 and d.day == 24 and _is_xnys_session(d):
+        return time(13, 0)
+    if d.month == 7 and d.day == 3 and _is_xnys_session(d) and d.weekday() in (0, 1, 2, 3):
+        return time(13, 0)
+    return time(16, 0)
+
+
+def resolve_equities_datafeed_regime(
+    ts_utc: datetime,
+    *,
+    enable_dec6_23x5_sip: bool = False,
+) -> dict[str, Any]:
+    """Classify an instant into XNYS RTH, 04:00-20:00 ET SIP, or 20:00-04:00 ET BOATS/IBKR."""
+    if ts_utc.tzinfo is None or ts_utc.utcoffset() is None:
+        raise ValueError("ts_utc must carry an explicit time zone")
+    if not isinstance(enable_dec6_23x5_sip, bool):
+        raise ValueError("enable_dec6_23x5_sip must be an explicit bool")
+
+    utc_dt = ts_utc.astimezone(UTC)
+    ny_dt = utc_dt.astimezone(_NY_TZ)
+    ny_date = ny_dt.date()
+    ny_tod = ny_dt.timetz().replace(tzinfo=None)
+
+    post_cutover = enable_dec6_23x5_sip and ny_date >= DEC6_23X5_CUTOVER_DATE
+    cutover_regime = "post_2026_12_06_23x5_sip" if post_cutover else "pre_2026_12_06_24x5_boats"
+
+    session = "CLOSED"
+    primary_feed = "NONE"
+    execution_venue = "NONE"
+    outside_rth = False
+    is_rth = False
+
+    if time(4, 0) <= ny_tod < time(20, 0):
+        if _is_xnys_session(ny_date):
+            rth_close = _xnys_rth_close_et(ny_date)
+            if time(9, 30) <= ny_tod < rth_close:
+                session = "XNYS_RTH"
+                primary_feed = "SIP"
+                execution_venue = "IBKR_RTH"
+                outside_rth = False
+                is_rth = True
+            else:
+                session = "EXTENDED_SIP"
+                primary_feed = "SIP"
+                execution_venue = "IBKR_OUTSIDE_RTH"
+                outside_rth = True
+                is_rth = False
+    else:
+        # 20:00-24:00 ET belongs to tomorrow's XNYS session; 00:00-04:00 ET belongs to today's.
+        target_session_date = ny_date + timedelta(days=1) if ny_tod >= time(20, 0) else ny_date
+        overnight_active = ny_date.weekday() != 5 and _is_xnys_session(target_session_date)
+        if overnight_active:
+            outside_rth = True
+            execution_venue = "IBKR_OUTSIDE_RTH"
+            if post_cutover and time(20, 0) <= ny_tod < time(21, 0):
+                session = "SIP_23X5_PAUSE"
+                primary_feed = "IBKR_OUTSIDE_RTH"
+            elif post_cutover:
+                session = "OVERNIGHT"
+                primary_feed = "SIP"
+            else:
+                session = "OVERNIGHT"
+                primary_feed = "BOATS"
+
+    return {
+        "calendar": "XNYS",
+        "timestamp_utc": utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "ny_local": ny_dt.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "session": session,
+        "primary_feed": primary_feed,
+        "execution_venue": execution_venue,
+        "is_rth": is_rth,
+        "outside_rth": outside_rth,
+        "cutover_date": DEC6_23X5_CUTOVER_DATE.isoformat(),
+        "cutover_regime": cutover_regime,
+        "paper_port": ib_ids.PAPER_PORT,
+    }

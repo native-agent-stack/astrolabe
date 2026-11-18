@@ -17,7 +17,7 @@
 
 [totals]
 agent_instruction_lines = 50 # every AGENTS.md and CLAUDE.md, at any depth
-prose_lines = 820
+prose_lines = 920
 config_lines = 330
 workflows = 2
 skills = 5

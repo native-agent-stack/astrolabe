@@ -20,8 +20,8 @@ def verify_catalog(root: Path = ROOT) -> list[str]:
         return ["Missing docs/adr/CATALOG.md"]
     cat_txt = CATALOG_MD.read_text(encoding="utf-8")
     adrs = sorted(ADR_DIR.glob("ADR-[0-9][0-9][0-9][0-9]-*.md"))
-    if len(adrs) < 3:
-        errors.append(f"Expected >=3 ADRs, found {len(adrs)}")
+    if len(adrs) < 4:
+        errors.append(f"Expected >=4 ADRs, found {len(adrs)}")
     for adr in adrs:
         if f"({adr.name})" not in cat_txt:
             errors.append(f"ADR missing from CATALOG.md: {adr.name}")
@@ -46,7 +46,8 @@ def main() -> int:
         for e in errs:
             print(f"[ADR-GATE FAIL] {e}", file=sys.stderr)
         return 1
-    print("[ADR-GATE PASS] 3/3 MADR 4.0 ADRs and 40-char SHA workflow pins verified.")
+    count = len(sorted(ADR_DIR.glob("ADR-[0-9][0-9][0-9][0-9]-*.md")))
+    print(f"[ADR-GATE PASS] {count}/{count} MADR 4.0 ADRs and 40-char SHA workflow pins verified.")
     return 0
 
 
