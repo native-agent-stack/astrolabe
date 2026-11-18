@@ -316,3 +316,13 @@ def test_adr0009_stage3b_protective_entry_shield() -> None:
     assert v_prob["size_multiplier"] == 0.25
     assert v_prob["promotion_track"] == "PROTECTIVE_FILTER_OR_GOVERNANCE"
     assert v_prob["standalone_alpha_claim"] is False
+
+
+def test_adr0010_stage3b_ibkr_paper_readiness_probe() -> None:
+    off = research_convergence.probe_stage3b_ibkr_paper_readiness(socket_open=False, staged_rows=4)
+    assert off["status"] == "GATEWAY_OFFLINE_STAGED_ONLY"
+    assert off["paper_only"] is True
+    assert off["staged_basket_rows"] == 4
+    ready = research_convergence.probe_stage3b_ibkr_paper_readiness(socket_open=True, staged_rows=2)
+    assert ready["status"] == "READY_PAPER_4002"
+    assert ready["gateway_socket_open"] is True

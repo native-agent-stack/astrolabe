@@ -11,3 +11,4 @@
 | [ADR-0007](ADR-0007-stage3b-orca-trading-lane-and-lit-queue-depletion.md) | Stage-3B Dual-Machine Orca Trading Lane & Lit-Only Queue Depletion (`H090`) | Accepted | 2026-11-18 | E4 |
 | [ADR-0008](ADR-0008-nine-feed-ranking-admission-and-v380-compounding-versioning.md) | Nine-Feed PIT Ranking Admission (`DF1`–`DF9`) & `v3.8.0` Two-Track Compounding Versioning | Accepted | 2026-11-18 | E4 |
 | [ADR-0009](ADR-0009-protective-entry-shield-and-h091-disjoint-cpcv.md) | Stage-3B Protective Entry Shield & `H091` Disjoint-Split CPCV Boundary | Accepted | 2026-11-18 | E4 |
+| [ADR-0010](ADR-0010-stage3b-loopback-gateway-and-staged-basket-readiness-probe.md) | Stage-3B Loopback Gateway & Staged-Basket Readiness Probe | Accepted | 2026-11-18 | E4 |
