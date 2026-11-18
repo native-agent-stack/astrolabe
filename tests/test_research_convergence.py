@@ -326,3 +326,49 @@ def test_adr0010_stage3b_ibkr_paper_readiness_probe() -> None:
     ready = research_convergence.probe_stage3b_ibkr_paper_readiness(socket_open=True, staged_rows=2)
     assert ready["status"] == "READY_PAPER_4002"
     assert ready["gateway_socket_open"] is True
+
+
+def test_adr0011_two_stage_collar_escalation_and_dec6_pause() -> None:
+    rth_ts = datetime(2026, 11, 18, 15, 0, tzinfo=UTC)
+    rest = research_convergence.evaluate_stage3b_two_stage_collar_escalation(
+        bid_px=100.00,
+        ask_px=100.06,
+        resting_elapsed_sec=8.0,
+        passive_filled=False,
+        as_of_utc=rth_ts,
+    )
+    assert rest["stage"] == "STAGE1_RESTING_LIT_BID"
+    assert rest["escalate_to_collar"] is False
+
+    esc = research_convergence.evaluate_stage3b_two_stage_collar_escalation(
+        bid_px=100.00,
+        ask_px=100.08,
+        resting_elapsed_sec=15.0,
+        passive_filled=False,
+        as_of_utc=rth_ts,
+    )
+    assert esc["stage"] == "STAGE2_MARKETABLE_COLLAR_LIMIT"
+    assert esc["escalate_to_collar"] is True
+    assert esc["limit_px"] == 100.08
+
+    wide = research_convergence.evaluate_stage3b_two_stage_collar_escalation(
+        bid_px=100.00,
+        ask_px=100.18,
+        resting_elapsed_sec=16.0,
+        passive_filled=False,
+        as_of_utc=rth_ts,
+    )
+    assert wide["stage"] == "EXPIRED_SPREAD_EXCEEDS_COLLAR_CAP"
+    assert wide["limit_px"] is None
+
+    pause_ts = datetime(2026, 12, 8, 1, 15, tzinfo=UTC)  # 20:15 ET post-Dec-6
+    paused = research_convergence.evaluate_stage3b_two_stage_collar_escalation(
+        bid_px=100.00,
+        ask_px=100.05,
+        resting_elapsed_sec=15.0,
+        passive_filled=False,
+        as_of_utc=pause_ts,
+        enable_dec6_23x5_sip=True,
+    )
+    assert paused["stage"] == "BLOCKED_SIP_23X5_DAILY_PAUSE"
+    assert paused["in_dec6_2000_2100_et_pause"] is True
