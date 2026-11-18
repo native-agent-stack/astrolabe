@@ -625,3 +625,97 @@ def evaluate_stage3b_two_stage_collar_escalation(
         "escalate_to_collar": False,
         "limit_px": None,
     }
+
+
+MIN_H096_ISO_F_BUY_SHARE: float = 0.15
+MIN_H096_BJZZ_DARK_SHARE: float = 0.12
+
+
+def evaluate_stage3b_dry_powder_15s_collar(
+    *,
+    bid_px: float,
+    ask_px: float,
+    entry_ask_px: float,
+    elapsed_sec: float,
+    ofi_entry: float,
+    iso_f_buy_share: float = 0.0,
+    bjzz_inst_dark_share: float = 0.0,
+    resting_passive_bid_0_15s: bool = False,
+    bid_survived_15s: bool = True,
+    as_of_utc: datetime,
+    enable_dec6_23x5_sip: bool = False,
+    dry_powder_window_sec: float = 15.0,
+    max_collar_spread_bps: float = RTH_PROTECTIVE_MAX_SPREAD_BPS,
+) -> dict[str, Any]:
+    """Evaluate `ADR-0012` (`H096`) pure `15s` dry-powder bid-survival & informed-flow collar."""
+    bid_v = _require_finite_float(bid_px, "bid_px")
+    ask_v = _require_finite_float(ask_px, "ask_px")
+    e_ask_v = _require_finite_float(entry_ask_px, "entry_ask_px")
+    elap_v = _require_finite_float(elapsed_sec, "elapsed_sec")
+    ofi_v = _require_finite_float(ofi_entry, "ofi_entry")
+    iso_v = _require_finite_float(iso_f_buy_share, "iso_f_buy_share")
+    bjzz_v = _require_finite_float(bjzz_inst_dark_share, "bjzz_inst_dark_share")
+    win_v = _require_finite_float(dry_powder_window_sec, "dry_powder_window_sec")
+    cap_v = _require_finite_float(max_collar_spread_bps, "max_collar_spread_bps")
+    if bid_v <= 0.0 or ask_v < bid_v or e_ask_v <= 0.0 or elap_v < 0.0 or win_v <= 0.0:
+        raise ValueError("Invalid quote or elapsed inputs for Stage-3B dry-powder 15s collar")
+    if not (0.0 < cap_v <= RTH_PROTECTIVE_MAX_SPREAD_BPS):
+        raise ValueError(f"max_collar_spread_bps must lie in (0, {RTH_PROTECTIVE_MAX_SPREAD_BPS}]")
+    if not isinstance(resting_passive_bid_0_15s, bool) or not isinstance(bid_survived_15s, bool):
+        raise ValueError("resting_passive_bid_0_15s and bid_survived_15s must be explicit bools")
+    if as_of_utc.tzinfo is None or as_of_utc.utcoffset() is None:
+        raise ValueError("as_of_utc must be timezone-aware")
+    if ib_ids.HOST != "127.0.0.1" or str(ib_ids.PAPER_PORT) != "4002":
+        raise PermissionError("Stage-3B dry-powder collar requires loopback PAPER_PORT")
+
+    ny_dt = as_of_utc.astimezone(_NY_TZ)
+    in_dec6_pause = bool(
+        enable_dec6_23x5_sip
+        and ny_dt.date() >= DEC6_23X5_CUTOVER_DATE
+        and ny_dt.weekday() != 5
+        and ny_dt.hour == 20
+    )
+    mid_px = 0.5 * (bid_v + ask_v)
+    spread_bps = ((ask_v - bid_v) / mid_px) * 10_000.0
+    ask_drift_bps = ((ask_v - e_ask_v) / e_ask_v) * 10_000.0
+    informed_ok = ofi_v >= MIN_PROTECTIVE_OFI and (
+        iso_v >= MIN_H096_ISO_F_BUY_SHARE or bjzz_v >= MIN_H096_BJZZ_DARK_SHARE
+    )
+    base = {
+        "paper_port": ib_ids.PAPER_PORT,
+        "spread_bps": round(spread_bps, 4),
+        "ask_drift_bps": round(ask_drift_bps, 4),
+        "informed_flow_joint_ok": informed_ok,
+        "in_dec6_2000_2100_et_pause": in_dec6_pause,
+        "promotion_track": "PROTECTIVE_FILTER_OR_GOVERNANCE",
+        "standalone_alpha_claim": False,
+    }
+    if in_dec6_pause:
+        return {
+            **base,
+            "stage": "BLOCKED_SIP_23X5_DAILY_PAUSE",
+            "approved": False,
+            "limit_px": None,
+        }
+    if resting_passive_bid_0_15s:
+        return {
+            **base,
+            "stage": "BLOCKED_RESTING_BID_SWEEP_RISK",
+            "approved": False,
+            "limit_px": None,
+        }
+    if not informed_ok:
+        return {**base, "stage": "BLOCKED_UNINFORMED_FLOW", "approved": False, "limit_px": None}
+    if not bid_survived_15s:
+        return {**base, "stage": "BLOCKED_BID_SWEEP_TOXICITY", "approved": False, "limit_px": None}
+    if elap_v < win_v:
+        return {**base, "stage": "DRY_POWDER_OBSERVING_0_15S", "approved": False, "limit_px": None}
+    if 0.0 < spread_bps <= cap_v and ask_drift_bps <= cap_v:
+        collar_px = min(ask_v, e_ask_v * (1.0 + cap_v / 10_000.0))
+        return {
+            **base,
+            "stage": "DRY_POWDER_15S_COLLAR_READY",
+            "approved": True,
+            "limit_px": round(collar_px, 4),
+        }
+    return {**base, "stage": "EXPIRED_COLLAR_SPREAD_OR_DRIFT", "approved": False, "limit_px": None}

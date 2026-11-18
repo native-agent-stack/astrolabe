@@ -372,3 +372,47 @@ def test_adr0011_two_stage_collar_escalation_and_dec6_pause() -> None:
     )
     assert paused["stage"] == "BLOCKED_SIP_23X5_DAILY_PAUSE"
     assert paused["in_dec6_2000_2100_et_pause"] is True
+
+
+def test_adr0012_stage3b_h096_dry_powder_15s_collar_and_informed_flow() -> None:
+    rth_ts = datetime(2026, 11, 18, 15, 0, tzinfo=UTC)
+    obs = research_convergence.evaluate_stage3b_dry_powder_15s_collar(
+        bid_px=100.00,
+        ask_px=100.06,
+        entry_ask_px=100.04,
+        elapsed_sec=9.0,
+        ofi_entry=0.34,
+        iso_f_buy_share=0.18,
+        as_of_utc=rth_ts,
+    )
+    assert obs["stage"] == "DRY_POWDER_OBSERVING_0_15S"
+    assert obs["limit_px"] is None
+
+    uninf = research_convergence.evaluate_stage3b_dry_powder_15s_collar(
+        bid_px=100.00,
+        ask_px=100.06,
+        entry_ask_px=100.04,
+        elapsed_sec=15.0,
+        ofi_entry=0.12,
+        iso_f_buy_share=0.05,
+        bjzz_inst_dark_share=0.04,
+        as_of_utc=rth_ts,
+    )
+    assert uninf["stage"] == "BLOCKED_UNINFORMED_FLOW"
+    assert uninf["approved"] is False
+
+    ready = research_convergence.evaluate_stage3b_dry_powder_15s_collar(
+        bid_px=100.02,
+        ask_px=100.09,
+        entry_ask_px=100.05,
+        elapsed_sec=15.0,
+        ofi_entry=0.35,
+        bjzz_inst_dark_share=0.14,
+        resting_passive_bid_0_15s=False,
+        bid_survived_15s=True,
+        as_of_utc=rth_ts,
+    )
+    assert ready["stage"] == "DRY_POWDER_15S_COLLAR_READY"
+    assert ready["approved"] is True
+    assert ready["limit_px"] == 100.09
+    assert ready["standalone_alpha_claim"] is False
