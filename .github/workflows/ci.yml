@@ -35,6 +35,7 @@ jobs:
           version: "0.13.7"
           enable-cache: true
       - run: uv sync --locked
+      - run: uv run python tools/architecture_catalog.py --check
       - run: uv run ruff check --output-format=github .
       - run: uv run ruff format --check .
       - run: uv run pyright
