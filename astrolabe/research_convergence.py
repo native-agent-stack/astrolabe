@@ -511,3 +511,36 @@ def evaluate_stage3b_protective_entry_shield(
         "promotion_track": "PROTECTIVE_FILTER_OR_GOVERNANCE",
         "standalone_alpha_claim": False,
     }
+
+
+def probe_stage3b_ibkr_paper_readiness(
+    *,
+    socket_open: bool | None = None,
+    staged_rows: int = 0,
+) -> dict[str, Any]:
+    """Fail-closed Stage-3B loopback `ib_ids.PAPER_PORT` & staged-basket readiness (`ADR-0010`)."""
+    if isinstance(staged_rows, bool) or not isinstance(staged_rows, int) or staged_rows < 0:
+        raise ValueError("staged_rows must be a non-negative integer")
+    if ib_ids.HOST != "127.0.0.1" or str(ib_ids.PAPER_PORT) != "4002":
+        raise PermissionError("Stage-3B readiness requires loopback 127.0.0.1 and PAPER_PORT")
+    if socket_open is None:
+        import socket
+
+        try:
+            with socket.create_connection((ib_ids.HOST, ib_ids.PAPER_PORT), timeout=0.35):
+                is_open = True
+        except OSError:
+            is_open = False
+    else:
+        if not isinstance(socket_open, bool):
+            raise ValueError("socket_open must be bool or None")
+        is_open = socket_open
+    return {
+        "lane_id": "T3B_IBKR_4002_NAUTILUS_PAPER",
+        "host": ib_ids.HOST,
+        "paper_port": ib_ids.PAPER_PORT,
+        "paper_only": True,
+        "gateway_socket_open": is_open,
+        "staged_basket_rows": staged_rows,
+        "status": "READY_PAPER_4002" if is_open else "GATEWAY_OFFLINE_STAGED_ONLY",
+    }
