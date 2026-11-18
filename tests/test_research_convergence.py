@@ -439,3 +439,35 @@ def test_adr0013_stage3b_wave2_reentry_and_rvol_tod_gate() -> None:
     assert w2["approved_wave1_early_ignition"] is True
     assert w2["approved_wave2_reentry"] is True
     assert w2["standalone_alpha_claim"] is False
+
+
+def test_adr0014_stage3b_12feed_bitemporal_ranking_handoff() -> None:
+    ok = research_convergence.evaluate_stage3b_12feed_bitemporal_ranking_handoff(
+        ts_event_ns=100,
+        ts_recv_ns=150,
+        decision_ns=200,
+        stage1_rvol_tod=2.45,
+        vol_z_tod=2.65,
+        ofi_entry=0.35,
+        stop_pct=1.75,
+        collar_spread_bps=6.5,
+        is_wave2_reentry=True,
+        cooldown_elapsed_sec=920.0,
+        pullback_held_zero_loss_floor=True,
+    )
+    assert ok["feeds_count"] == 12
+    assert ok["bitemporal_pit_ok"] is True
+    assert ok["approved"] is True
+
+    bad_pit = research_convergence.evaluate_stage3b_12feed_bitemporal_ranking_handoff(
+        ts_event_ns=300,
+        ts_recv_ns=200,
+        decision_ns=250,
+        stage1_rvol_tod=2.45,
+        vol_z_tod=2.65,
+        ofi_entry=0.35,
+        stop_pct=1.75,
+        collar_spread_bps=6.5,
+    )
+    assert bad_pit["bitemporal_pit_ok"] is False
+    assert bad_pit["approved"] is False

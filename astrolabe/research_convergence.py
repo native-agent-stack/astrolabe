@@ -768,3 +768,52 @@ def evaluate_stage3b_wave2_reentry_and_rvol_tod_gate(
         "promotion_track": "PROTECTIVE_FILTER_OR_GOVERNANCE",
         "standalone_alpha_claim": False,
     }
+
+
+RANKING_DATAFEEDS_12_SCHEMA_V310: str = "sota-symbol-ranking-datafeeds.v3.10"
+MIN_STAGE3B_WAVE2_COOLDOWN_SEC: float = 900.0
+
+
+def evaluate_stage3b_12feed_bitemporal_ranking_handoff(
+    *,
+    ts_event_ns: int,
+    ts_recv_ns: int,
+    decision_ns: int,
+    stage1_rvol_tod: float,
+    vol_z_tod: float,
+    ofi_entry: float,
+    stop_pct: float,
+    collar_spread_bps: float,
+    is_wave2_reentry: bool = False,
+    cooldown_elapsed_sec: float = 900.0,
+    pullback_held_zero_loss_floor: bool = True,
+) -> dict[str, Any]:
+    """Enforce `ADR-0014` DF1..DF12 bitemporal PIT ordering & Stage-3B IBKR `:4002` parity."""
+    rvol_v = _require_finite_float(stage1_rvol_tod, "stage1_rvol_tod")
+    vz_v = _require_finite_float(vol_z_tod, "vol_z_tod")
+    ofi_v = _require_finite_float(ofi_entry, "ofi_entry")
+    stop_v = _require_finite_float(stop_pct, "stop_pct")
+    spr_v = _require_finite_float(collar_spread_bps, "collar_spread_bps")
+    cool_v = _require_finite_float(cooldown_elapsed_sec, "cooldown_elapsed_sec")
+    if not (0.0 < stop_v <= ADR0022_MAX_STOP_PCT):
+        raise ValueError(f"ADR-0022 violation: stop_pct={stop_v} exceeds {ADR0022_MAX_STOP_PCT}%")
+    if spr_v <= 0.0:
+        raise ValueError("collar_spread_bps must be positive")
+    if ib_ids.HOST != "127.0.0.1" or str(ib_ids.PAPER_PORT) != "4002":
+        raise PermissionError("Stage-3B DF1..DF12 handoff requires loopback PAPER_PORT 4002")
+
+    bitemporal_ok = ts_event_ns <= ts_recv_ns <= decision_ns
+    tod_ok = rvol_v >= MIN_ABNORMAL_RVOL_TOD_IGNITION and vz_v >= 2.3
+    flow_ok = ofi_v >= MIN_PROTECTIVE_OFI and spr_v <= RTH_PROTECTIVE_MAX_SPREAD_BPS
+    wave2_ok = (not is_wave2_reentry) or (
+        pullback_held_zero_loss_floor and cool_v >= MIN_STAGE3B_WAVE2_COOLDOWN_SEC
+    )
+    return {
+        "schema_version": RANKING_DATAFEEDS_12_SCHEMA_V310,
+        "feeds_count": 12,
+        "paper_port": ib_ids.PAPER_PORT,
+        "bitemporal_pit_ok": bitemporal_ok,
+        "approved": bool(bitemporal_ok and tod_ok and flow_ok and wave2_ok),
+        "promotion_track": "PROTECTIVE_FILTER_OR_GOVERNANCE",
+        "standalone_alpha_claim": False,
+    }
