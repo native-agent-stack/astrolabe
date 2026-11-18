@@ -239,3 +239,37 @@ def test_module_stays_pure_stdlib_without_heavy_imports() -> None:
         timeout=30,
     )
     assert proc.stdout.strip() == "[]"
+
+
+def test_adr0007_lit_queue_print_filter_and_stage3b_orca_lane() -> None:
+    assert research_convergence.is_lit_round_lot_queue_print("Q", ["F"], 200) is True
+    assert research_convergence.is_lit_round_lot_queue_print("D", [], 500) is False
+    assert research_convergence.is_lit_round_lot_queue_print("Q", ["I"], 100) is False
+    assert research_convergence.is_lit_round_lot_queue_print("N", [], 50) is False
+
+    lane = research_convergence.validate_stage3b_orca_trading_lane(
+        port=research_convergence.ib_ids.PAPER_PORT,
+        candidate_host="portable_mac_lead",
+        active_broker_host="portable_mac_lead",
+        max_stop_pct=1.75,
+        planned_entry_msg_per_min=1200,
+    )
+    assert lane["lane_id"] == "T3B_IBKR_4002_NAUTILUS_PAPER"
+    assert lane["protective_reserve_mpm"] == 300
+
+    with pytest.raises(PermissionError, match="split-brain"):
+        research_convergence.validate_stage3b_orca_trading_lane(
+            port=research_convergence.ib_ids.PAPER_PORT,
+            candidate_host="stationary_noesis_heavy",
+            active_broker_host="portable_mac_lead",
+            max_stop_pct=1.50,
+            planned_entry_msg_per_min=500,
+        )
+    with pytest.raises(ValueError, match="reserving 300"):
+        research_convergence.validate_stage3b_orca_trading_lane(
+            port=research_convergence.ib_ids.PAPER_PORT,
+            candidate_host="portable_mac_lead",
+            active_broker_host=None,
+            max_stop_pct=1.50,
+            planned_entry_msg_per_min=2800,
+        )
