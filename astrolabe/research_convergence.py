@@ -719,3 +719,52 @@ def evaluate_stage3b_dry_powder_15s_collar(
             "limit_px": round(collar_px, 4),
         }
     return {**base, "stage": "EXPIRED_COLLAR_SPREAD_OR_DRIFT", "approved": False, "limit_px": None}
+
+
+MIN_ABNORMAL_RVOL_TOD_FIRST_SIGN: float = 1.65
+MIN_ABNORMAL_RVOL_TOD_IGNITION: float = 2.20
+
+
+def evaluate_stage3b_wave2_reentry_and_rvol_tod_gate(
+    *,
+    stage1_rvol_tod: float,
+    ofi_entry: float,
+    stop_pct: float,
+    collar_spread_bps: float,
+    core_harvest_completed: bool = False,
+    pullback_held_zero_loss_floor: bool = False,
+) -> dict[str, Any]:
+    """Enforce `ADR-0013` Stage-3B abnormal `RVOL-TOD` size-bias purge & Wave-2 re-entry."""
+    rvol_v = _require_finite_float(stage1_rvol_tod, "stage1_rvol_tod")
+    ofi_v = _require_finite_float(ofi_entry, "ofi_entry")
+    stop_v = _require_finite_float(stop_pct, "stop_pct")
+    spr_v = _require_finite_float(collar_spread_bps, "collar_spread_bps")
+    if rvol_v < 0.0 or spr_v <= 0.0:
+        raise ValueError("stage1_rvol_tod must be >= 0 and collar_spread_bps > 0")
+    if not (0.0 < stop_v <= ADR0022_MAX_STOP_PCT):
+        raise ValueError(f"ADR-0022 violation: stop_pct={stop_v} exceeds {ADR0022_MAX_STOP_PCT}%")
+    if not isinstance(core_harvest_completed, bool) or not isinstance(
+        pullback_held_zero_loss_floor, bool
+    ):
+        raise ValueError("Wave-2 flags must be explicit bools")
+    if ib_ids.HOST != "127.0.0.1" or str(ib_ids.PAPER_PORT) != "4002":
+        raise PermissionError("Stage-3B Wave-2 & RVOL-TOD gate requires loopback PAPER_PORT")
+
+    flow_ok = ofi_v >= MIN_PROTECTIVE_OFI
+    collar_ok = spr_v <= RTH_PROTECTIVE_MAX_SPREAD_BPS
+    wave1_ok = rvol_v >= MIN_ABNORMAL_RVOL_TOD_IGNITION and flow_ok and collar_ok
+    wave2_ok = (
+        core_harvest_completed
+        and pullback_held_zero_loss_floor
+        and rvol_v >= MIN_ABNORMAL_RVOL_TOD_FIRST_SIGN
+        and flow_ok
+        and collar_ok
+    )
+    return {
+        "paper_port": ib_ids.PAPER_PORT,
+        "megacap_normal_rate_size_bias_purged": rvol_v < MIN_ABNORMAL_RVOL_TOD_FIRST_SIGN,
+        "approved_wave1_early_ignition": wave1_ok,
+        "approved_wave2_reentry": wave2_ok,
+        "promotion_track": "PROTECTIVE_FILTER_OR_GOVERNANCE",
+        "standalone_alpha_claim": False,
+    }

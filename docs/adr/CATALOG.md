@@ -14,3 +14,4 @@
 | [ADR-0010](ADR-0010-stage3b-loopback-gateway-and-staged-basket-readiness-probe.md) | Stage-3B Loopback Gateway & Staged-Basket Readiness Probe | Accepted | 2026-11-18 | E4 |
 | [ADR-0011](ADR-0011-stage3b-two-stage-collar-escalation-and-dec6-pause-gate.md) | Stage-3B Two-Stage Lit-Bid to `<= 10 bps` Collar Escalation & Dec-6 Pause Gate | Accepted | 2026-11-18 | E4 |
 | [ADR-0012](ADR-0012-stage3b-h096-dry-powder-15s-collar-and-informed-flow-gate.md) | Stage-3B `H096` Pure `15s` Dry-Powder Collar & Informed-Flow Joint Gate | Accepted | 2026-11-18 | E4 |
+| [ADR-0013](ADR-0013-stage3b-abnormal-rvol-tod-and-wave2-reentry-gate.md) | Stage-3B Abnormal Time-of-Day `RVOL` Size-Bias Purge & Wave-2 Re-Entry Gate | Accepted | 2026-11-18 | E4 |
