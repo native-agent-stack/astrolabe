@@ -4,5 +4,5 @@
 # DSH_MODEL; changed: a TOML file of its own instead of shell assignments.
 [models]
 claude = "claude-opus-5-5"
-codex = "gpt-6-astra"
+codex = "gpt-6.2-astra"
 deepseek = "deepseek-flash"

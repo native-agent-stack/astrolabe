@@ -720,7 +720,7 @@ def dsh_calls(log: Path) -> list[dict]:
     "builder,reviewer,model",
     [
         ("codex", "claude", "claude-opus-5-5"),
-        ("claude", "codex", "gpt-6-astra"),
+        ("claude", "codex", "gpt-6.2-astra"),
     ],
 )
 def test_review_records_the_counts_line_and_the_opposite_family(
@@ -932,7 +932,7 @@ def test_a_claude_built_branch_still_goes_to_codex_without_the_flag(
     log = fake_dsh(monkeypatch, tmp_path, ['{"findings": []}'])
     calls = fake_reviewer(monkeypatch)
     record = json.loads(g.review("feature", "claude").read_text())
-    assert record["reviewer"] == "codex" and record["model"] == "gpt-6-astra"
+    assert record["reviewer"] == "codex" and record["model"] == "gpt-6.2-astra"
     assert calls[0][0][:2] == ["codex", "exec"]
     assert not log.exists()
 
@@ -1064,7 +1064,7 @@ def test_the_review_command_line_accepts_the_deepseek_reviewer(
     [
         ("tested", "0" * 40, "review commit"),
         ("reviewer", "codex", "other model family"),
-        ("model", "gpt-6-astra", "review model"),
+        ("model", "gpt-6.2-astra", "review model"),
         ("findings", [{"text": "problem", "status": "open"}], "unresolved"),
         ("findings", [{"text": "problem", "status": "closed: "}], "unresolved"),
     ],
@@ -3098,9 +3098,9 @@ def test_review_digest_uses_canonical_public_record(repo: Path, tmp_path: Path):
 @pytest.mark.parametrize(
     "requested,reviewer,model",
     [
-        (None, "codex", "gpt-6-astra"),
+        (None, "codex", "gpt-6.2-astra"),
         ("claude", "claude", "claude-opus-5-5"),
-        ("codex", "codex", "gpt-6-astra"),
+        ("codex", "codex", "gpt-6.2-astra"),
     ],
 )
 def test_a_deepseek_built_branch_lands_through_auto_with_either_reviewer(
