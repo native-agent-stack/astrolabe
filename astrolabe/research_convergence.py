@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import math
 import re
+from collections import deque
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
+from threading import Lock
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -816,4 +818,569 @@ def evaluate_stage3b_12feed_bitemporal_ranking_handoff(
         "approved": bool(bitemporal_ok and tod_ok and flow_ok and wave2_ok),
         "promotion_track": "PROTECTIVE_FILTER_OR_GOVERNANCE",
         "standalone_alpha_claim": False,
+    }
+
+
+# ---------------------------------------------------------------------------
+# ADR-0015: IBKR Paper P4 (:4002) 3,000 req/min TWS-Compliant Mandatory
+# Lossless Trailing, POST Retirement, Slow-Coil & Merit-Ladder Feeder Contract
+# ---------------------------------------------------------------------------
+
+IBKR_P4_ADR0015_VERSION: str = "ADR-0015-P4-LOSSLESS-v1"
+IBKR_P4_MAX_REQ_PER_MIN: int = 3000
+IBKR_P4_EXIT_RESERVE_PER_MIN: int = 300
+IBKR_P4_MAX_MSG_PER_SEC: int = 50
+IBKR_P4_EXIT_RESERVE_PER_SEC: int = 5
+IBKR_P4_RTH_MAX_SPREAD_BPS: Decimal = Decimal("50.0")
+IBKR_P4_EXTENDED_MAX_SPREAD_BPS: Decimal = Decimal("28.0")
+IBKR_P4_LIVE_BOATS_MIN_DVOL_USD: Decimal = Decimal("150000")
+IBKR_P4_WAVE2_TTL_SEC: float = 900.0
+IBKR_P4_EB_PRIOR_KAPPA: float = 40.0
+IBKR_P4_PREWALL_MAX_DATE = date(2026, 10, 15)
+
+IBKR_P4_VALID_SESSIONS: frozenset[str] = frozenset(
+    {"RTH_CORE", "PRE_MARKET", "POST_CLOSE", "OVERNIGHT_BOATS"}
+)
+IBKR_P4_ADMITTED_ARCHETYPES: frozenset[str] = frozenset(
+    {
+        "PRE_TRAVEL_EARLY_VOLUME_SHOCK",
+        "SLOW_BUILDING_COIL_VDU_ACCUMULATION",
+        "FIRST_HAND_24X5_INCENTIVE_IGNITION",
+        "PEAK_CLIMAX_REVERSE_SHORT_SAR",
+        "FAST_SELL_WAVE2_PULLBACK_REENTRY",
+    }
+)
+IBKR_P4_RETIRED_INCENTIVE_TIERS: frozenset[str] = frozenset(
+    {
+        "POST",
+        "POST_INCENTIVE_RETIRED",
+        "TIER2_INTRADAY_POST_NEWS_DRIFT",
+        "TIER3_STALE_OR_REHASH",
+    }
+)
+IBKR_P4_SOTA_UPSTREAM_PINS: dict[str, str] = {
+    "nautilus_trader": PINNED_NAUTILUS_TRADER_COMMIT,
+    "ib_async": PINNED_IB_ASYNC_COMMIT,
+    "hftbacktest": "5f3ec40b2afb764e0fea112f941ed85523ef4e88",
+    "skfolio": "90e3fb907fab39d244d899f3caf4e9676889309c",
+    "ml4t-diagnostic": "19e76072e64a18c9ba56130e4a7bcc0bc871f57e",
+    "edgartools": "574c2bd15f6c629bceef03b6550ea8ac8abf3473",
+    "statsmodels": "278ff9950636cdd4939b4055e339a8e681d79cab",
+}
+
+
+def _require_finite_decimal(value: Decimal | int | float | str, name: str) -> Decimal:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a finite numeric value, got bool {value!r}")
+    if isinstance(value, Decimal):
+        d = value
+    elif isinstance(value, int):
+        d = Decimal(value)
+    elif isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite, got {value!r}")
+        d = Decimal(str(value))
+    elif isinstance(value, str):
+        try:
+            d = Decimal(value.strip())
+        except InvalidOperation as exc:
+            raise ValueError(f"{name} invalid decimal string {value!r}") from exc
+    else:
+        raise ValueError(f"{name} must be Decimal/int/float/str, got {type(value).__name__}")
+    if not d.is_finite():
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    return d
+
+
+def _quantize_to_tick(price: Decimal, tick: Decimal, *, rounding: str) -> Decimal:
+    return (price / tick).to_integral_value(rounding=rounding) * tick
+
+
+def _assert_ibkr_paper_loopback_firewall() -> None:
+    if ib_ids.HOST != "127.0.0.1" or str(ib_ids.PAPER_PORT) != "4002":
+        raise PermissionError(
+            "IBKR P4 firewall requires loopback 127.0.0.1 and PAPER_PORT 4002 (live forbidden)"
+        )
+
+
+class IbkrP4DualWindowRatePacer:
+    """Atomic 3,000 req/min & 50 msgs/sec pacer preserving 10% (300/min & 5/sec) exit reserve."""
+
+    def __init__(
+        self,
+        *,
+        max_per_min: int = IBKR_P4_MAX_REQ_PER_MIN,
+        exit_reserve_per_min: int = IBKR_P4_EXIT_RESERVE_PER_MIN,
+        max_per_sec: int = IBKR_P4_MAX_MSG_PER_SEC,
+        exit_reserve_per_sec: int = IBKR_P4_EXIT_RESERVE_PER_SEC,
+    ) -> None:
+        for param_name, param_val in (
+            ("max_per_min", max_per_min),
+            ("exit_reserve_per_min", exit_reserve_per_min),
+            ("max_per_sec", max_per_sec),
+            ("exit_reserve_per_sec", exit_reserve_per_sec),
+        ):
+            if isinstance(param_val, bool) or not isinstance(param_val, int):
+                raise ValueError(f"{param_name} must be an integer, got {param_val!r}")
+        if max_per_min <= 0 or max_per_min > IBKR_P4_MAX_REQ_PER_MIN:
+            raise ValueError(f"max_per_min must lie in (0, {IBKR_P4_MAX_REQ_PER_MIN}]")
+        if max_per_sec <= 0 or max_per_sec > IBKR_P4_MAX_MSG_PER_SEC:
+            raise ValueError(f"max_per_sec must lie in (0, {IBKR_P4_MAX_MSG_PER_SEC}]")
+        min_res_m = (max_per_min + 9) // 10
+        min_res_s = (max_per_sec + 9) // 10
+        if exit_reserve_per_min < min_res_m or exit_reserve_per_min >= max_per_min:
+            raise ValueError(f"exit_reserve_per_min must be in [{min_res_m}, {max_per_min - 1}]")
+        if exit_reserve_per_sec < min_res_s or exit_reserve_per_sec >= max_per_sec:
+            raise ValueError(f"exit_reserve_per_sec must be in [{min_res_s}, {max_per_sec - 1}]")
+        self.max_per_min = max_per_min
+        self.exit_reserve_per_min = exit_reserve_per_min
+        self.max_per_sec = max_per_sec
+        self.exit_reserve_per_sec = exit_reserve_per_sec
+        self._min_window: deque[float] = deque()
+        self._sec_window: deque[float] = deque()
+        self._last_mono: float | None = None
+        self._lock = Lock()
+
+    def _evict_locked(self, now_mono: float) -> None:
+        min_cut = now_mono - 60.0
+        while self._min_window and self._min_window[0] <= min_cut:
+            self._min_window.popleft()
+        sec_cut = now_mono - 1.0
+        while self._sec_window and self._sec_window[0] <= sec_cut:
+            self._sec_window.popleft()
+
+    def try_acquire(
+        self,
+        *,
+        is_protective_exit: bool = False,
+        weight: int = 1,
+        now_mono: float,
+    ) -> dict[str, Any]:
+        """Validate monotonic clock & 60s/1s ceilings before committing timestamps atomically."""
+        if not isinstance(is_protective_exit, bool):
+            raise ValueError("is_protective_exit must be an explicit bool")
+        if isinstance(weight, bool) or not isinstance(weight, int) or weight <= 0:
+            raise ValueError("weight must be a positive integer")
+        now_v = _require_finite_float(now_mono, "now_mono")
+        if now_v < 0.0:
+            raise ValueError("now_mono must be non-negative")
+
+        cap_m = (
+            self.max_per_min if is_protective_exit else self.max_per_min - self.exit_reserve_per_min
+        )
+        cap_s = (
+            self.max_per_sec if is_protective_exit else self.max_per_sec - self.exit_reserve_per_sec
+        )
+        with self._lock:
+            if self._last_mono is not None and now_v < self._last_mono:
+                raise ValueError(
+                    f"now_mono must be monotonic non-decreasing ({now_v} < {self._last_mono})"
+                )
+            self._last_mono = now_v
+            self._evict_locked(now_v)
+            used_m = len(self._min_window)
+            used_s = len(self._sec_window)
+            if used_m + weight > cap_m or used_s + weight > cap_s:
+                reason = (
+                    "PROTECTIVE_EXIT_RESERVE_GUARD"
+                    if not is_protective_exit
+                    else "IBKR_P4_HARD_CAP_EXCEEDED"
+                )
+                return {
+                    "admitted": False,
+                    "reason": reason,
+                    "is_protective_exit": is_protective_exit,
+                    "used_per_min": used_m,
+                    "cap_per_min": cap_m,
+                    "used_per_sec": used_s,
+                    "cap_per_sec": cap_s,
+                }
+            for _ in range(weight):
+                self._min_window.append(now_v)
+                self._sec_window.append(now_v)
+            return {
+                "admitted": True,
+                "reason": "ADMITTED",
+                "is_protective_exit": is_protective_exit,
+                "used_per_min": len(self._min_window),
+                "cap_per_min": cap_m,
+                "used_per_sec": len(self._sec_window),
+                "cap_per_sec": cap_s,
+            }
+
+
+def quantize_ibkr_p4_lossless_trail_order(
+    *,
+    entry_px: Decimal | int | float | str,
+    stop_pct: Decimal | int | float | str,
+    nbbo_spread_bps: Decimal | int | float | str,
+    side: str,
+    session_mode: str,
+    trail_pct: Decimal | int | float | str | None = None,
+    in_dec6_pause: bool = False,
+) -> dict[str, Any]:
+    """Build exact-Decimal TWS-compliant mandatory lossless trailing protection for Long & Short.
+
+    - `RTH_CORE`: `SMART` native `TRAIL LIMIT` (`outsideRth=False`), strictly positive
+      `lmtPriceOffset > 0` quantized to parent stock Rule-612 `minTick` (avoids TWS Error 110),
+      with initial `trailingPercent` aligned to `stop_pct` unless an explicit tighter value is set.
+    - `PRE_MARKET` / `POST_CLOSE`: `SMART` atomic `STP LMT` (`outsideRth=True`, `>= 1 tick`
+      collar) + live-sync `P4` monotonic 3-tier ratchet.
+    - `OVERNIGHT_BOATS` (`20:00-03:50 ET`): `exchange="OVERNIGHT"` collared `LMT` (`tif="DAY"`,
+      `outsideRth=True`) + mandatory active `P4` live-sync guardian.
+    """
+    _assert_ibkr_paper_loopback_firewall()
+    if not isinstance(in_dec6_pause, bool):
+        raise ValueError("in_dec6_pause must be an explicit bool")
+    if (
+        not isinstance(session_mode, str)
+        or session_mode.strip().upper() not in IBKR_P4_VALID_SESSIONS
+    ):
+        raise ValueError(
+            f"session_mode must be one of {sorted(IBKR_P4_VALID_SESSIONS)}, got {session_mode!r}"
+        )
+    sess = session_mode.strip().upper()
+    if in_dec6_pause:
+        raise ValueError("Order rejected: Dec-6 23/5 20:00-21:00 ET SIP daily pause active")
+
+    if not isinstance(side, str):
+        raise ValueError(f"side must be 'BUY' or 'SELL', got {side!r}")
+    s_norm = side.strip().upper()
+    if s_norm in ("BUY", "LONG"):
+        entry_action, exit_action = "BUY", "SELL"
+    elif s_norm in ("SELL", "SHORT"):
+        entry_action, exit_action = "SELL", "BUY"
+    else:
+        raise ValueError(f"Unsupported side {side!r}; expected BUY/LONG or SELL/SHORT")
+
+    d_entry = _require_finite_decimal(entry_px, "entry_px")
+    d_stop_pct = _require_finite_decimal(stop_pct, "stop_pct")
+    d_spread_bps = _require_finite_decimal(nbbo_spread_bps, "nbbo_spread_bps")
+
+    if d_entry < Decimal("0.05"):
+        raise ValueError(f"entry_px must be >= 0.05, got {d_entry}")
+    if d_stop_pct <= Decimal("0") or d_stop_pct > Decimal("2.00"):
+        raise ValueError(f"ADR-0022 violation: stop_pct={d_stop_pct} outside (0, 2.00]%")
+    if d_spread_bps < Decimal("0"):
+        raise ValueError(f"nbbo_spread_bps must be >= 0, got {d_spread_bps}")
+    if sess == "RTH_CORE" and d_spread_bps > IBKR_P4_RTH_MAX_SPREAD_BPS:
+        raise ValueError(
+            f"RTH entry rejected: nbbo_spread_bps={d_spread_bps} > "
+            f"{IBKR_P4_RTH_MAX_SPREAD_BPS} bps cap"
+        )
+    if sess != "RTH_CORE" and d_spread_bps > IBKR_P4_EXTENDED_MAX_SPREAD_BPS:
+        raise ValueError(
+            f"Extended/Overnight entry rejected: nbbo_spread_bps={d_spread_bps} > "
+            f"{IBKR_P4_EXTENDED_MAX_SPREAD_BPS} bps cap"
+        )
+
+    entry_round = ROUND_FLOOR if entry_action == "BUY" else ROUND_CEILING
+    q_entry = _quantize_to_tick(d_entry, _nms_tick(d_entry), rounding=entry_round)
+    parent_tick = _nms_tick(q_entry)
+    q_entry = _quantize_to_tick(q_entry, parent_tick, rounding=entry_round)
+    if q_entry <= Decimal("0"):
+        raise ValueError("Quantized entry price must be strictly positive")
+
+    # Exact Rule-612 stop quantization: CEILING for Long stop, FLOOR for Short stop -> <= 2.00%
+    stop_ratio = d_stop_pct / Decimal("100")
+    if entry_action == "BUY":
+        raw_stop = q_entry * (Decimal("1") - stop_ratio)
+        stop_tick = _nms_tick(raw_stop)
+        q_stop = _quantize_to_tick(raw_stop, stop_tick, rounding=ROUND_CEILING)
+        if q_stop >= q_entry:
+            step = Decimal("0.01") if q_entry > Decimal("1.00") else Decimal("0.0001")
+            q_stop = q_entry - step
+    else:
+        raw_stop = q_entry * (Decimal("1") + stop_ratio)
+        stop_tick = _nms_tick(raw_stop)
+        q_stop = _quantize_to_tick(raw_stop, stop_tick, rounding=ROUND_FLOOR)
+        if q_stop <= q_entry:
+            step = Decimal("0.01") if q_entry >= Decimal("1.00") else Decimal("0.0001")
+            q_stop = q_entry + step
+
+    realized_stop_pct = (abs(q_entry - q_stop) / q_entry) * Decimal("100")
+    if realized_stop_pct <= Decimal("0") or realized_stop_pct > Decimal("2.00"):
+        raise ValueError(
+            f"Rule-612 wire stop breached ADR-0022 <= 2.00%: realized={realized_stop_pct:.6f}%"
+        )
+
+    # Positive TWS lmtPriceOffset quantized strictly to Reg-NMS Rule 612 ticks (no sub-penny >= $1)
+    collar_bps = min(
+        Decimal("30.0"),
+        max(Decimal("8.0"), d_spread_bps * Decimal("1.25")),
+    )
+    offset_tick = max(parent_tick, _nms_tick(q_stop))
+    raw_offset = q_stop * (collar_bps / Decimal("10000"))
+    q_offset = max(offset_tick, _quantize_to_tick(raw_offset, offset_tick, rounding=ROUND_CEILING))
+    if exit_action == "SELL":
+        q_stop_limit = max(offset_tick, q_stop - q_offset)
+        q_offset = q_stop - q_stop_limit
+    else:
+        raw_limit = q_stop + q_offset
+        limit_tick = _nms_tick(raw_limit)
+        q_stop_limit = _quantize_to_tick(raw_limit, limit_tick, rounding=ROUND_CEILING)
+        q_offset = q_stop_limit - q_stop
+
+    if q_offset <= Decimal("0") or q_stop_limit % _nms_tick(q_stop_limit) != Decimal("0"):
+        raise ValueError(
+            f"Rule-612 wire limit quantization failed: stop={q_stop}, limit={q_stop_limit}"
+        )
+
+    # Effective trailing percent: strictly >= 0.01% and <= realized wire stop <= 2.00%
+    max_trail_pct = realized_stop_pct.quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
+    if max_trail_pct < Decimal("0.01"):
+        raise ValueError(
+            f"Realized wire stop {realized_stop_pct:.4f}% is below 0.01% TWS trailing minimum"
+        )
+    if trail_pct is None:
+        eff_trail_pct = min(Decimal("2.00"), max_trail_pct)
+    else:
+        d_trail = _require_finite_decimal(trail_pct, "trail_pct")
+        if d_trail < Decimal("0.01") or d_trail > Decimal("2.00"):
+            raise ValueError(f"trail_pct={d_trail} outside [0.01, 2.00]%")
+        if d_trail > realized_stop_pct:
+            raise ValueError(
+                f"trail_pct={d_trail}% exceeds realized stop_pct={realized_stop_pct:.4f}%"
+            )
+        eff_trail_pct = min(d_trail, max_trail_pct).quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
+        if eff_trail_pct < Decimal("0.01"):
+            raise ValueError(f"Quantized trailing_percent={eff_trail_pct} below 0.01% minimum")
+
+    if sess == "RTH_CORE":
+        exchange = "SMART"
+        exit_order_type = "TRAIL LIMIT"
+        outside_rth = False
+        tif = "DAY"
+        guardian_mode = "NATIVE_TWS_TRAIL_LIMIT_PLUS_P4_RATCHET"
+    elif sess in ("PRE_MARKET", "POST_CLOSE"):
+        exchange = "SMART"
+        exit_order_type = "STP LMT"
+        outside_rth = True
+        tif = "DAY"
+        guardian_mode = "ATOMIC_STP_LMT_PLUS_P4_LIVE_SYNC_RATCHET"
+    else:
+        exchange = "OVERNIGHT"
+        exit_order_type = "LMT"
+        outside_rth = True
+        tif = "DAY"
+        guardian_mode = "MANDATORY_P4_LIVE_SYNC_OVERNIGHT_GUARDIAN"
+
+    return {
+        "contract_version": IBKR_P4_ADR0015_VERSION,
+        "paper_host": ib_ids.HOST,
+        "paper_port": ib_ids.PAPER_PORT,
+        "session_mode": sess,
+        "exchange": exchange,
+        "tif": tif,
+        "outside_rth": outside_rth,
+        "entry_action": entry_action,
+        "exit_action": exit_action,
+        "exit_order_type": exit_order_type,
+        "parent_min_tick": str(parent_tick),
+        "entry_limit_px": str(q_entry),
+        "protective_stop_px": str(q_stop),
+        "protective_limit_px": str(q_stop_limit),
+        "lmt_price_offset": str(q_offset),
+        "trailing_percent": str(eff_trail_pct),
+        "realized_stop_pct": str(realized_stop_pct.quantize(Decimal("0.0001"))),
+        "lossless_ratchet_tiers_pct": {
+            "tier1_be_arm_min": "0.65",
+            "tier1_be_arm_max": "1.10",
+            "tier1_be_floor": "0.18",
+            "tier2_core_harvest_50pct": "1.25",
+            "tier2_runner_floor": "0.25",
+            "tier3_mfe_chandelier_keep_pct": ["65", "75", "82", "86"],
+        },
+        "guardian_mode": guardian_mode,
+        "transmit_on_spec": False,
+        "promotion_track": "PROTECTIVE_FILTER_OR_GOVERNANCE",
+        "standalone_alpha_claim": False,
+    }
+
+
+def evaluate_ibkr_p4_post_retirement_and_setup_gate(
+    *,
+    archetype: str,
+    incentive_tier: str,
+    session_mode: str,
+    boats_active: bool,
+    boats_dvol_usd: Decimal | int | float | str = Decimal("0"),
+    move_pct: Decimal | int | float | str = Decimal("0"),
+    rvol_tod: Decimal | int | float | str = Decimal("0"),
+    pullback_dryup_ratio: Decimal | int | float | str = Decimal("1.0"),
+    nbbo_spread_bps: Decimal | int | float | str | None = None,
+    wave2_used: bool = False,
+    wave2_elapsed_sec: float = 0.0,
+) -> dict[str, Any]:
+    """Hard-retire already-POST incentives & isolate live BOATS >= $150k from stale POST tape."""
+    _assert_ibkr_paper_loopback_firewall()
+    if not isinstance(boats_active, bool) or not isinstance(wave2_used, bool):
+        raise ValueError("boats_active and wave2_used must be explicit bools")
+    for s_name, s_val in (
+        ("archetype", archetype),
+        ("incentive_tier", incentive_tier),
+        ("session_mode", session_mode),
+    ):
+        if not isinstance(s_val, str) or not s_val.strip():
+            raise ValueError(f"{s_name} must be a non-empty string, got {s_val!r}")
+    arch = archetype.strip().upper()
+    tier = incentive_tier.strip().upper()
+    sess = session_mode.strip().upper()
+    if sess not in IBKR_P4_VALID_SESSIONS:
+        raise ValueError(f"Unsupported session_mode {session_mode!r}")
+
+    d_boats_dvol = _require_finite_decimal(boats_dvol_usd, "boats_dvol_usd")
+    d_move = _require_finite_decimal(move_pct, "move_pct")
+    d_rvol = _require_finite_decimal(rvol_tod, "rvol_tod")
+    d_vdu = _require_finite_decimal(pullback_dryup_ratio, "pullback_dryup_ratio")
+    elapsed_v = _require_finite_float(wave2_elapsed_sec, "wave2_elapsed_sec")
+    if (
+        d_boats_dvol < Decimal("0")
+        or d_rvol < Decimal("0")
+        or d_vdu < Decimal("0")
+        or elapsed_v < 0.0
+    ):
+        raise ValueError("Volume, RVOL, VDU ratio, and elapsed seconds must be non-negative")
+
+    reasons: list[str] = []
+    if nbbo_spread_bps is not None:
+        d_spr = _require_finite_decimal(nbbo_spread_bps, "nbbo_spread_bps")
+        if d_spr < Decimal("0"):
+            raise ValueError("nbbo_spread_bps must be non-negative")
+        max_spr = (
+            IBKR_P4_RTH_MAX_SPREAD_BPS if sess == "RTH_CORE" else IBKR_P4_EXTENDED_MAX_SPREAD_BPS
+        )
+        if d_spr > max_spr:
+            reasons.append("SPREAD_ABOVE_SESSION_CAP")
+    if tier in IBKR_P4_RETIRED_INCENTIVE_TIERS:
+        reasons.append("POST_INCENTIVE_RETIRED")
+    if arch not in IBKR_P4_ADMITTED_ARCHETYPES:
+        reasons.append(f"UNRECOGNIZED_ARCHETYPE:{arch}")
+    if (
+        boats_active or sess == "OVERNIGHT_BOATS"
+    ) and d_boats_dvol < IBKR_P4_LIVE_BOATS_MIN_DVOL_USD:
+        reasons.append("LIVE_BOATS_BELOW_150K_FLOOR")
+    if arch == "SLOW_BUILDING_COIL_VDU_ACCUMULATION":
+        if d_vdu > Decimal("0.80") or not (Decimal("1.35") <= d_rvol <= Decimal("4.50")):
+            reasons.append("SLOW_COIL_VDU_OR_RVOL_OUT_OF_BAND")
+        if not (Decimal("0.25") <= d_move <= Decimal("5.50")):
+            reasons.append("SLOW_COIL_EARLY_MOVE_OUT_OF_BAND")
+    elif arch == "FAST_SELL_WAVE2_PULLBACK_REENTRY" and (
+        wave2_used or elapsed_v > IBKR_P4_WAVE2_TTL_SEC
+    ):
+        reasons.append("WAVE2_SINGLE_USE_OR_TTL_EXPIRED")
+
+    return {
+        "contract_version": IBKR_P4_ADR0015_VERSION,
+        "paper_port": ib_ids.PAPER_PORT,
+        "archetype": arch,
+        "session_mode": sess,
+        "post_incentive_retired": tier in IBKR_P4_RETIRED_INCENTIVE_TIERS,
+        "approved": len(reasons) == 0,
+        "rejection_reasons": reasons,
+        "promotion_track": "PROTECTIVE_FILTER_OR_GOVERNANCE",
+        "standalone_alpha_claim": False,
+    }
+
+
+def build_ibkr_p4_merit_feeder_receipt(
+    *,
+    closed_roundtrips: int,
+    distinct_sessions: int,
+    distinct_accounts: int,
+    mean_r_multiple: float,
+    profit_factor: float,
+    mean_net_1x_bps: float,
+    mean_net_2x_bps: float,
+    sim_events: int,
+    sim_distinct_dates: int,
+    sim_as_of_date: str,
+    hlz_t_stat: float,
+    hlz_t_hurdle: float,
+    dsr_probability: float,
+    cpcv_positive_pct: float,
+    input_sha256: str,
+) -> dict[str, Any]:
+    """Emit strictly dimensionless (% / bps / R) 24/7 Sim + 24/5 Paper merit receipt."""
+    _assert_ibkr_paper_loopback_firewall()
+    validate_research_convergence_provenance(
+        input_sha256,
+        IBKR_P4_SOTA_UPSTREAM_PINS,
+        "E4",
+        other_repos_authority="PHILOSOPHY_ONLY",
+    )
+    for int_name, int_val in (
+        ("closed_roundtrips", closed_roundtrips),
+        ("distinct_sessions", distinct_sessions),
+        ("distinct_accounts", distinct_accounts),
+        ("sim_events", sim_events),
+        ("sim_distinct_dates", sim_distinct_dates),
+    ):
+        if isinstance(int_val, bool) or not isinstance(int_val, int) or int_val < 0:
+            raise ValueError(f"{int_name} must be a non-negative integer")
+    if not isinstance(sim_as_of_date, str) or not sim_as_of_date.strip():
+        raise ValueError("sim_as_of_date must be an ISO YYYY-MM-DD string")
+    parsed_as_of = date.fromisoformat(sim_as_of_date.strip())
+    if parsed_as_of > IBKR_P4_PREWALL_MAX_DATE:
+        raise ValueError(
+            f"Pre-wall violation: sim_as_of_date={parsed_as_of} > {IBKR_P4_PREWALL_MAX_DATE}"
+        )
+    mean_r = _require_finite_float(mean_r_multiple, "mean_r_multiple")
+    pf = _require_finite_float(profit_factor, "profit_factor")
+    net_1x = _require_finite_float(mean_net_1x_bps, "mean_net_1x_bps")
+    net_2x = _require_finite_float(mean_net_2x_bps, "mean_net_2x_bps")
+    t_val = _require_finite_float(hlz_t_stat, "hlz_t_stat")
+    t_hurdle = _require_finite_float(hlz_t_hurdle, "hlz_t_hurdle")
+    dsr = _require_finite_float(dsr_probability, "dsr_probability")
+    cpcv = _require_finite_float(cpcv_positive_pct, "cpcv_positive_pct")
+    if pf < 0.0 or t_hurdle < 3.0 or not (0.0 <= dsr <= 1.0) or not (0.0 <= cpcv <= 100.0):
+        raise ValueError("Invalid merit metric bounds")
+
+    eb_shrunk_r = (closed_roundtrips * mean_r) / (closed_roundtrips + IBKR_P4_EB_PRIOR_KAPPA)
+    sim_cleared = (
+        sim_events >= 200
+        and sim_distinct_dates >= 60
+        and net_1x > 0.0
+        and net_2x > 0.0
+        and t_val >= t_hurdle
+        and dsr >= 0.95
+        and cpcv >= 70.0
+    )
+    paper_cleared = (
+        closed_roundtrips >= 30
+        and distinct_sessions >= 10
+        and distinct_accounts >= 2
+        and eb_shrunk_r > 0.0
+        and pf >= 1.25
+    )
+    alpha_cleared = sim_cleared and paper_cleared
+    return {
+        "schema_version": "ibkr-p4-merit-feeder-receipt.v1",
+        "contract_version": IBKR_P4_ADR0015_VERSION,
+        "paper_port": ib_ids.PAPER_PORT,
+        "dimensionless_only": True,
+        "sim_as_of_date": parsed_as_of.isoformat(),
+        "sim_events": sim_events,
+        "sim_distinct_dates": sim_distinct_dates,
+        "closed_roundtrips": closed_roundtrips,
+        "distinct_sessions": distinct_sessions,
+        "distinct_accounts": distinct_accounts,
+        "eb_prior_kappa": IBKR_P4_EB_PRIOR_KAPPA,
+        "eb_shrunk_r_multiple": round(eb_shrunk_r, 4),
+        "profit_factor": round(pf, 4),
+        "mean_net_1x_bps": round(net_1x, 4),
+        "mean_net_2x_bps": round(net_2x, 4),
+        "hlz_t_stat": round(t_val, 4),
+        "hlz_t_hurdle": round(t_hurdle, 4),
+        "dsr_probability": round(dsr, 4),
+        "cpcv_positive_pct": round(cpcv, 2),
+        "sim_cleared_hlz": sim_cleared,
+        "paper_cleared_merit": paper_cleared,
+        "promotion_track": "ALPHA_STRATEGY_MINOR"
+        if alpha_cleared
+        else "PROTECTIVE_FILTER_OR_GOVERNANCE",
+        "standalone_alpha_claim": bool(alpha_cleared),
+        "stage5_live_merit_eligible": bool(alpha_cleared),
+        "input_sha256": input_sha256,
+        "pinned_upstream_commits": dict(IBKR_P4_SOTA_UPSTREAM_PINS),
     }
