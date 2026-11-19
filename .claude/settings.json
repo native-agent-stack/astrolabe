@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/python3 \"${CLAUDE_PROJECT_DIR}/tools/guard/pretooluse.py\""
+            "command": "PY=/usr/bin/python3; [ -x \"$PY\" ] || PY=python; \"$PY\" \"${CLAUDE_PROJECT_DIR}/tools/guard/pretooluse.py\""
           }
         ]
       }

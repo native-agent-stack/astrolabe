@@ -493,7 +493,8 @@ def test_the_guard_is_the_only_hook_and_covers_the_shell_and_file_tools():
                         {
                             "type": "command",
                             "command": (
-                                '/usr/bin/python3 "${CLAUDE_PROJECT_DIR}/tools/guard/pretooluse.py"'
+                                'PY=/usr/bin/python3; [ -x "$PY" ] || PY=python; '
+                                '"$PY" "${CLAUDE_PROJECT_DIR}/tools/guard/pretooluse.py"'
                             ),
                         }
                     ],
