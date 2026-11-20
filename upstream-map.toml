@@ -19,6 +19,8 @@
 ".agents/skills/lead/scripts/learnings.py" = { upstream = "compound-engineering `ce-compound` practice (skill text read, not installed)", how = "build-on", feature = "one lesson per solved problem in its cheapest durable form", why = "the practice must reach all three runtimes as a command and a file, without the plugin" }
 
 # Only differently named rows need aliases; package labels are normalized automatically.
+"scripts/merge_gate.py" = { upstream = "CPython", how = "build-on", feature = "pathlib and sys", why = "run ADR-0023 upstream-map, 18-pin shelf, and ADR evidence verification fail-closed" }
+
 [dependencies]
 nautilus-trader = "NautilusTrader"
 pyright = "pyright (with `nodejs-wheel-binaries` 24.19.0)"
