@@ -17,3 +17,4 @@
 | [ADR-0013](ADR-0013-stage3b-abnormal-rvol-tod-and-wave2-reentry-gate.md) | Stage-3B Abnormal Time-of-Day `RVOL` Size-Bias Purge & Wave-2 Re-Entry Gate | Accepted | 2026-11-18 | E4 |
 | [ADR-0014](ADR-0014-stage3b-12feed-bitemporal-symbol-ranking-and-8stage-convergence.md) | Stage-3B Finalized 12-Feed (`DF1..DF12`) Bitemporal Symbol Ranking & 8-Stage Convergence | Accepted | 2026-11-18 | E4 |
 | [ADR-0015](ADR-0015-ibkr-p4-3000rpm-mandatory-lossless-trail-post-retirement-and-merit-contract.md) | IBKR Paper `P4 (:4002)` `3,000 req/min` Mandatory Lossless Trailing, `POST` Retirement & Merit-Ladder Feeder | Accepted | 2026-11-19 | E4 |
+| [ADR-0016](ADR-0016-post-ant-merit-quarantine-and-lossless-kernel-parity.md) | Post-ANT Whole-Market Merit Intake, `ADR-0064` Quarantine & Shared Lossless Kernel Parity (`v3.11.1`) | Accepted | 2026-11-20 | E4 |

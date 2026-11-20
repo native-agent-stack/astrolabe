@@ -17,6 +17,7 @@ import re
 from collections import deque
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
+from fractions import Fraction
 from threading import Lock
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -1383,4 +1384,271 @@ def build_ibkr_p4_merit_feeder_receipt(
         "stage5_live_merit_eligible": bool(alpha_cleared),
         "input_sha256": input_sha256,
         "pinned_upstream_commits": dict(IBKR_P4_SOTA_UPSTREAM_PINS),
+    }
+
+
+POST_ANT_ERA_ID = "POST_ANT_WHOLE_MARKET_MERIT"
+POST_ANT_STRATEGY_CONTRACT_V2 = "sota.strategy-contract.v2"
+POST_ANT_ACTIVE_SOTA_STRATEGIES: frozenset[str] = frozenset(
+    {
+        "BJZZ_SUBPENNY_INST_DARK_SWEEP",
+        "VIX_SPIKE_AND_CRUSH_REGIME_SURFER",
+        "ZARATTINI_2024_5M_ORB",
+        "ZARATTINI_2025_NOISE_VWAP",
+        "H090_TIGHT_SPREAD_HIGH_OFI_PASSIVE_BID",
+        "H01_PRE_TRAVEL_POCKET_PIVOT",
+        "H08_FIRST_HAND_CATALYST_IGNITION",
+    }
+)
+POST_ANT_QUARANTINED_STRATEGIES: frozenset[str] = frozenset(
+    {
+        "SOTA_DUAL_CLIMAX_STOP_AND_REVERSE",
+        "POST_VIX_REVERSAL",
+        "POST_VIX_REVERSAL_MAJOR_GROWTH_THRUST",
+        "SOTA_DUAL_EXTREME_BALANCE_BREAK_EARLY",
+        "BLIND_WAVE2_REENTRY",
+        "RAPID_WAVE2_REENTRY_STRESS",
+        "FLOW_VELOCITY_CAPITAL_RECYCLE",
+    }
+)
+_P4_SLUG_RE = re.compile(r"[^a-z0-9_]+")
+_P4_CANONICAL_SLUGS: dict[str, str] = {
+    "BJZZ_SUBPENNY_INST_DARK_SWEEP": "bjzz_dark_sweep",
+    "VIX_SPIKE_AND_CRUSH_REGIME_SURFER": "vix_regime_surf",
+    "ZARATTINI_2024_5M_ORB": "zar24_5m_orb",
+    "ZARATTINI_2025_NOISE_VWAP": "zar25_noise_vwap",
+    "H090_TIGHT_SPREAD_HIGH_OFI_PASSIVE_BID": "h090_ofi_bid",
+    "H01_PRE_TRAVEL_POCKET_PIVOT": "h01_pocket_vdu",
+    "H08_FIRST_HAND_CATALYST_IGNITION": "h08_sec_8k_ep",
+}
+
+
+def is_post_ant_strategy_quarantined(strategy_id: str) -> bool:
+    """Canonical ADR-0064 quarantine predicate matching exact IDs and family variants."""
+    sid = str(strategy_id or "").strip().upper()
+    if sid in POST_ANT_QUARANTINED_STRATEGIES:
+        return True
+    return sid.startswith("POST_VIX_REVERSAL") or "FLOW_VELOCITY_CAPITAL_RECYCLE" in sid
+
+
+POST_ANT_STRATEGY_CONTRACTS_V2: dict[str, dict[str, Any]] = {
+    "BJZZ_SUBPENNY_INST_DARK_SWEEP": {
+        "allowed_sessions": frozenset({"PRE_MARKET", "RTH_CORE", "POST_CLOSE", "OVERNIGHT_BOATS"}),
+        "max_spread_bps": Decimal("28.0"),
+        "spread_strict_lt": False,
+        "max_stop_pct": Decimal("1.60"),
+        "direction": "long",
+        "allowed_symbols": None,
+    },
+    "VIX_SPIKE_AND_CRUSH_REGIME_SURFER": {
+        "allowed_sessions": frozenset({"PRE_MARKET", "RTH_CORE", "POST_CLOSE"}),
+        "max_spread_bps": Decimal("18.0"),
+        "spread_strict_lt": False,
+        "max_stop_pct": Decimal("1.25"),
+        "direction": "both",
+        "allowed_symbols": frozenset({"SPY", "QQQ", "IWM", "UVXY", "VXX", "SVIX", "VIXY"}),
+    },
+    "ZARATTINI_2024_5M_ORB": {
+        "allowed_sessions": frozenset({"RTH_CORE"}),
+        "max_spread_bps": Decimal("25.0"),
+        "spread_strict_lt": False,
+        "max_stop_pct": Decimal("1.60"),
+        "direction": "both",
+        "allowed_symbols": None,
+    },
+    "ZARATTINI_2025_NOISE_VWAP": {
+        "allowed_sessions": frozenset({"RTH_CORE"}),
+        "max_spread_bps": Decimal("3.0"),
+        "spread_strict_lt": True,
+        "max_stop_pct": Decimal("0.50"),
+        "direction": "both",
+        "allowed_symbols": frozenset({"SPY", "QQQ", "IWM"}),
+    },
+    "H090_TIGHT_SPREAD_HIGH_OFI_PASSIVE_BID": {
+        "allowed_sessions": frozenset({"RTH_CORE"}),
+        "max_spread_bps": Decimal("10.0"),
+        "spread_strict_lt": False,
+        "max_stop_pct": Decimal("1.25"),
+        "direction": "long",
+        "allowed_symbols": None,
+    },
+    "H01_PRE_TRAVEL_POCKET_PIVOT": {
+        "allowed_sessions": frozenset({"PRE_MARKET", "RTH_CORE", "POST_CLOSE", "OVERNIGHT_BOATS"}),
+        "max_spread_bps": Decimal("28.0"),
+        "spread_strict_lt": False,
+        "max_stop_pct": Decimal("1.60"),
+        "direction": "long",
+        "allowed_symbols": None,
+    },
+    "H08_FIRST_HAND_CATALYST_IGNITION": {
+        "allowed_sessions": frozenset({"PRE_MARKET", "RTH_CORE", "POST_CLOSE", "OVERNIGHT_BOATS"}),
+        "max_spread_bps": Decimal("28.0"),
+        "spread_strict_lt": False,
+        "max_stop_pct": Decimal("1.60"),
+        "direction": "long",
+        "allowed_symbols": None,
+    },
+}
+
+
+def build_p4_canonical_client_order_id(strategy_id: str, seq: int) -> str:
+    """Emit canonical `sota-<canonical_slug>-p4-<seq>` client ID (`sota.strategy-contract.v2`)."""
+    if isinstance(seq, bool) or not isinstance(seq, int) or seq < 1:
+        raise ValueError(f"seq must be int >= 1 (got {seq!r})")
+    sid = str(strategy_id or "").strip().upper()
+    if not sid:
+        raise ValueError("strategy_id must be non-empty")
+    slug = _P4_CANONICAL_SLUGS.get(sid)
+    if slug is None:
+        slug = _P4_SLUG_RE.sub("_", sid.lower()).strip("_")[:24].rstrip("_")
+    if len(slug) < 2:
+        raise ValueError(f"strategy_id produces invalid slug: {strategy_id!r}")
+    return f"sota-{slug}-p4-{seq}"
+
+
+def evaluate_post_ant_merit_target_for_ibkr_p4(
+    *,
+    symbol: str,
+    strategy_id: str,
+    merit_tier: str,
+    df_pillars_manifested: int,
+    entry_px: Decimal | int | float | str,
+    seq: int,
+    sec_dilution_clean: bool = False,
+    requested_stop_pct: Decimal | int | float | str = Decimal("1.35"),
+    position_leverage_x: Decimal | int | float | str = Decimal("1.0"),
+    nbbo_spread_bps: Decimal | int | float | str | None = None,
+    session_mode: str = "RTH_CORE",
+    side: str = "BUY",
+    is_new_issue_30d: bool = False,
+) -> dict[str, Any]:
+    """Gate Post-ANT merited equity into IBKR P4 :4002 with shared kernel + quarantine parity."""
+    _assert_ibkr_paper_loopback_firewall()
+    if not isinstance(sec_dilution_clean, bool) or not isinstance(is_new_issue_30d, bool):
+        raise ValueError("sec_dilution_clean and is_new_issue_30d must be explicit bools")
+    if isinstance(df_pillars_manifested, bool) or not isinstance(df_pillars_manifested, int):
+        raise ValueError("df_pillars_manifested must be an int")
+
+    sym = str(symbol or "").strip().upper()
+    sid = str(strategy_id or "").strip().upper()
+    tier = str(merit_tier or "").strip().upper()
+    sess = str(session_mode or "").strip().upper()
+    s_norm = str(side or "").strip().upper()
+    if not sym or not sym.replace(".", "").isalnum():
+        raise ValueError(f"Invalid symbol: {symbol!r}")
+    if sess not in IBKR_P4_VALID_SESSIONS:
+        raise ValueError(f"Unsupported session_mode {session_mode!r}")
+    if s_norm not in ("BUY", "LONG", "SELL", "SHORT"):
+        raise ValueError(f"Unsupported side {side!r}; expected BUY/LONG or SELL/SHORT")
+
+    coid = build_p4_canonical_client_order_id(sid, seq)
+    d_lev = _require_finite_decimal(position_leverage_x, "position_leverage_x")
+    d_req_stop = _require_finite_decimal(requested_stop_pct, "requested_stop_pct")
+    if d_lev < Decimal("0.01") or d_lev > Decimal("4"):
+        raise ValueError(f"position_leverage_x must be in [0.01, 4] (got {position_leverage_x!r})")
+
+    reasons: list[str] = []
+    d_spr: Decimal | None = None
+    if nbbo_spread_bps is None:
+        reasons.append("MISSING_NBBO_SPREAD_OBSERVATION")
+    else:
+        d_spr = _require_finite_decimal(nbbo_spread_bps, "nbbo_spread_bps")
+        if d_spr < Decimal("0"):
+            raise ValueError("nbbo_spread_bps must be non-negative")
+
+    contract = POST_ANT_STRATEGY_CONTRACTS_V2.get(sid)
+    if is_post_ant_strategy_quarantined(sid):
+        reasons.append(f"QUARANTINED_ADR0064:{sid}")
+    elif contract is None:
+        reasons.append(f"NON_ACTIVE_SOTA_STRATEGY:{sid}")
+    else:
+        if sess not in contract["allowed_sessions"]:
+            reasons.append(f"STRATEGY_SESSION_NOT_ALLOWED:{sid}:{sess}")
+        if contract["direction"] == "long" and s_norm in ("SELL", "SHORT"):
+            reasons.append(f"STRATEGY_LONG_ONLY_DIRECTION:{sid}:{s_norm}")
+        allowed_syms = contract["allowed_symbols"]
+        if allowed_syms is not None and sym not in allowed_syms:
+            reasons.append(f"STRATEGY_SYMBOL_NOT_ALLOWED:{sid}:{sym}")
+
+    if tier not in ("MERIT_TIER_1_CORE", "MERIT_TIER_2_ACTIVE"):
+        reasons.append(f"MERIT_TIER_NOT_ADMITTED:{tier}")
+    if df_pillars_manifested < 0 or df_pillars_manifested > 6:
+        reasons.append(f"INVALID_DF_PILLARS_COUNT:{df_pillars_manifested}")
+    elif tier == "MERIT_TIER_1_CORE" and df_pillars_manifested < 4:
+        reasons.append(f"TIER1_REQUIRES_4_DF_PILLARS:{df_pillars_manifested}")
+    elif df_pillars_manifested < 3:
+        reasons.append(f"INSUFFICIENT_DF_PILLARS:{df_pillars_manifested}")
+    if not sec_dilution_clean:
+        reasons.append("SEC_90D_DILUTION_UNVERIFIED_OR_BLOCKED")
+    if d_req_stop <= Decimal("0") or d_req_stop > Decimal("2.00"):
+        reasons.append(f"ADR0022_STOP_OUT_OF_BOUNDS:{d_req_stop}")
+
+    # Cross-repo spread parity: Tier 1 <= 15 bps; Tier 2 <= 35 RTH / <= 28 EXT; AND strategy cap!
+    if d_spr is not None:
+        session_cap = Decimal("35.0") if sess == "RTH_CORE" else IBKR_P4_EXTENDED_MAX_SPREAD_BPS
+        tier_cap = Decimal("15.0") if tier == "MERIT_TIER_1_CORE" else session_cap
+        max_spr = min(session_cap, tier_cap)
+        if d_spr <= Decimal("0"):
+            reasons.append(f"INVALID_NONPOSITIVE_SPREAD:{d_spr}")
+        else:
+            if d_spr > max_spr:
+                reasons.append(f"SPREAD_ABOVE_TIER_OR_SESSION_CAP:{d_spr}>{max_spr}")
+            if contract is not None:
+                c_spr = contract["max_spread_bps"]
+                if (contract["spread_strict_lt"] and d_spr >= c_spr) or (
+                    not contract["spread_strict_lt"] and d_spr > c_spr
+                ):
+                    reasons.append(f"STRATEGY_SPREAD_EXCEEDS_CONTRACT:{sid}:{d_spr}>{c_spr}")
+
+    if is_new_issue_30d and d_lev > Decimal("1"):
+        reasons.append("FINRA_4210_NEW_ISSUE_30D_CASH_ONLY")
+
+    # Universal exact-rational <=1.35% equity-risk & strategy-contract stop ceiling (ZERO widening!)
+    lev_cap = (Decimal("1.35") / d_lev).quantize(Decimal("0.0001"), rounding=ROUND_FLOOR)
+    c_max_stop = contract["max_stop_pct"] if contract is not None else Decimal("2.00")
+    eff_stop = min(Decimal("2.00"), d_req_stop, lev_cap, c_max_stop)
+    trail_spec: dict[str, Any] | None = None
+    if not reasons and d_spr is not None:
+        try:
+            cand_spec = quantize_ibkr_p4_lossless_trail_order(
+                entry_px=entry_px,
+                stop_pct=eff_stop,
+                nbbo_spread_bps=d_spr,
+                side=side,
+                session_mode=sess,
+            )
+        except ValueError as exc:
+            reasons.append(f"QUANTIZATION_REJECTED:{exc}")
+            cand_spec = None
+        if cand_spec is not None:
+            # Exact infinite-precision rational check (zero Decimal 28-digit precision drift!)
+            f_ent = Fraction(Decimal(str(cand_spec["entry_limit_px"])))
+            f_stp = Fraction(Decimal(str(cand_spec["protective_stop_px"])))
+            f_lev = Fraction(d_lev)
+            f_eff = Fraction(eff_stop)
+            f_diff_x100 = abs(f_ent - f_stp) * 100
+            exceeds_stop = f_diff_x100 > (f_eff * f_ent)
+            exceeds_eq = (f_diff_x100 * f_lev) > (Fraction(135, 100) * f_ent)
+            if exceeds_stop or exceeds_eq:
+                reasons.append(
+                    f"SUBTICK_EXCEEDS_LEVERAGE_OR_STOP_CAP:{cand_spec['realized_stop_pct']}"
+                )
+            else:
+                trail_spec = cand_spec
+    return {
+        "era": POST_ANT_ERA_ID,
+        "schema_version": POST_ANT_STRATEGY_CONTRACT_V2,
+        "paper_port": ib_ids.PAPER_PORT,
+        "symbol": sym,
+        "strategy_id": sid,
+        "client_order_id": coid,
+        "merit_tier": tier,
+        "df_pillars_manifested": df_pillars_manifested,
+        "approved": len(reasons) == 0,
+        "rejection_reasons": reasons,
+        "effective_stop_pct": str(eff_stop),
+        "take_profit_cap_enabled": False,
+        "trail_spec": trail_spec,
+        "promotion_track": "PROTECTIVE_FILTER_OR_GOVERNANCE",
+        "standalone_alpha_claim": False,
     }
