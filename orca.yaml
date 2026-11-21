@@ -12,3 +12,5 @@ defaultTabs:
   - title: Tests
   - title: Git status
     command: git status --short
+  - title: Tier-0 Merge Gate
+    command: uv run python scripts/merge_gate.py
