@@ -24,8 +24,8 @@ from upstream_map_fixture import (
     render,
 )
 
-# Code that needs an entry: the package, the tools and every skill's scripts.
-CODE_ROOTS = ("astrolabe/", "tools/")
+# Code that needs an entry: the package, the tools, scripts and every skill's scripts.
+CODE_ROOTS = ("astrolabe/", "tools/", "scripts/")
 SKILL_SCRIPTS = ".agents/skills/*/scripts/*"
 
 
